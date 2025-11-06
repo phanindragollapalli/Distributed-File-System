@@ -32,3 +32,23 @@ int register_client(const char *username, const char *ip, int client_port)
     printf("Registered client: %s (%s:%d)\n", username, ip, client_port);
     return client_count - 1;
 }
+
+// Get storage server by ID
+StorageServerInfo *get_ss_by_id(int ss_id)
+{
+    if (ss_id < 0 || ss_id >= ss_count)
+    {
+        return NULL;
+    }
+    return &ss_list[ss_id];
+}
+
+// Get client by ID
+ClientInfo *get_client_by_id(int client_id)
+{
+    if (client_id < 0 || client_id >= client_count)
+    {
+        return NULL;
+    }
+    return &client_list[client_id];
+}

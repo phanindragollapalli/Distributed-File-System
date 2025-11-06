@@ -1,0 +1,48 @@
+#define _DEFAULT_SOURCE
+#include "../include/ss_registration.h"
+#include "../../common/include/protocol.h"
+#include <stdio.h>
+#include <dirent.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+// register_with_ns: sends registration info to NS, returns success
+int register_with_ns(int ns_fd, const char *ss_ip, int ss_nm_port, int ss_client_port)
+{
+    char msg[512];
+    snprintf(msg, sizeof(msg), "REGISTER_SS %s %d %d\n", ss_ip, ss_nm_port, ss_client_port);
+    write(ns_fd, msg, strlen(msg));
+    // Optionally, wait for ACK from NS
+    char ack[64];
+    int n = read(ns_fd, ack, sizeof(ack) - 1);
+    if (n > 0)
+    {
+        ack[n] = '\0';
+        if (strstr(ack, "ACK"))
+            return 1;
+    }
+    return 0;
+}
+
+// send_file_list_to_ns: sends all current filenames to NS
+int send_file_list_to_ns(int ns_fd, const char *dir)
+{
+    DIR *dp = opendir(dir);
+    if (!dp)
+        return -1;
+    struct dirent *ep;
+    while ((ep = readdir(dp)) != NULL)
+    {
+        if (ep->d_type == DT_REG)
+        {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "FILE %s\n", ep->d_name);
+            write(ns_fd, msg, strlen(msg));
+        }
+    }
+    closedir(dp);
+    // End of list indicator
+    write(ns_fd, "END_FILE_LIST\n", 14);
+    return 0;
+}

@@ -21,4 +21,10 @@ typedef struct
 int register_storage_server(const char *ip, int nm_port, int client_port, const char file_list[][128], int file_count);
 int register_client(const char *username, const char *ip, int client_port);
 
+// Get storage server by ID
+StorageServerInfo *get_ss_by_id(int ss_id);
+
+// Get client by ID
+ClientInfo *get_client_by_id(int client_id);
+
 #endif

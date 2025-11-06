@@ -1,5 +1,5 @@
 
-.PHONY: all common client name_server storage_server clean
+.PHONY: all common client name_server storage_server clean distclean
 
 SUBDIRS := common client name_server storage_server
 
@@ -26,7 +26,15 @@ storage_server: common
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
+# Clean build artifacts (bin/, *.o)
 clean:
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean BIN_DIR=$(ABS_BIN_DIR); done
 	rm -rf $(BIN_DIR)
+
+# Clean everything (build artifacts + logs)
+distclean: clean
+	rm -rf logs/
+	rm -rf name_server/logs/ name_server/data/
+	rm -rf storage_server/logs/ storage_server/data/
+	rm -rf storage_server/storage/files/*
 
