@@ -36,4 +36,12 @@ int list_all_files(char files[][256], int max_count);
 // Get file count
 int get_file_count();
 
+/* ========== DAY 13: PERSISTENCE FUNCTIONS ========== */
+
+// Save all metadata to disk
+int save_metadata_to_disk();
+
+// Load metadata from disk on startup
+int load_metadata_from_disk();
+
 #endif

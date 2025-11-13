@@ -1,7 +1,16 @@
+/*
+ * STORAGE SERVER AND CLIENT REGISTRATION
+ * Person 1, Days 5-6
+ *
+ * Manages registration of Storage Servers and Clients with the Name Server.
+ * Maintains lists of connected Storage Servers and Clients with their metadata.
+ */
+
 #include "ns_registration.h"
 #include <string.h>
 #include <stdio.h>
 
+// Storage Server registry (max 16 Storage Servers)
 static StorageServerInfo ss_list[16];
 static int ss_count = 0;
 

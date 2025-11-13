@@ -1,7 +1,20 @@
+/*
+ * TRIE DATA STRUCTURE - Person 1, Day 3-4
+ * Efficient file path lookup data structure providing O(m) search time where m is path length
+ * Uses 256-ary tree (one child per ASCII character) for optimal character-by-character traversal
+ * Each file path is stored as a sequence of characters leading to a leaf node containing SS_ID
+ * This enables fast routing of file requests to the correct Storage Server
+ */
+
 #include "../include/ns_storage.h"
+#include "../../common/include/logger.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
+extern Logger *global_logger;
+
+/* Create a new Trie node with 256 children (one for each ASCII character) */
 TrieNode *trie_create_node()
 {
     TrieNode *node = (TrieNode *)calloc(1, sizeof(TrieNode));
@@ -11,6 +24,10 @@ TrieNode *trie_create_node()
     return node;
 }
 
+/* Insert a file path into Trie and associate it with a Storage Server ID
+ * Traverses character by character, creating nodes as needed
+ * Marks the final node as end of file and stores the SS_ID for routing
+ */
 void trie_insert(TrieNode *root, const char *filename, int ss_id)
 {
     TrieNode *p = root;
@@ -26,6 +43,11 @@ void trie_insert(TrieNode *root, const char *filename, int ss_id)
     p->storage_server_id = ss_id;
 }
 
+/* Search for a file in the Trie and retrieve its Storage Server ID
+ * Returns 1 if file found, 0 if not found
+ * If found, outputs the SS_ID through ss_id_out pointer for routing purposes
+ * Time complexity: O(m) where m is the length of the filename
+ */
 int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
 {
     TrieNode *p = root;
@@ -42,5 +64,188 @@ int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
             *ss_id_out = p->storage_server_id;
         return 1;
     }
+    return 0;
+}
+
+/* ========== DAY 13: TRIE PERSISTENCE FUNCTIONS ========== */
+
+#define TRIE_FILE "name_server/data/trie.dat"
+
+/* Helper: Recursively collect all files from Trie */
+static void collect_files_recursive(TrieNode *node, char files[][256], int ss_ids[], int *count, int max_count)
+{
+    if (!node || *count >= max_count)
+        return;
+
+    // If this is end of a file path, add to collection
+    if (node->is_end_of_file && node->file_name)
+    {
+        strncpy(files[*count], node->file_name, 255);
+        files[*count][255] = '\0';
+        ss_ids[*count] = node->storage_server_id;
+        (*count)++;
+    }
+
+    // Recursively traverse all children
+    for (int i = 0; i < 256; i++)
+    {
+        if (node->children[i])
+        {
+            collect_files_recursive(node->children[i], files, ss_ids, count, max_count);
+        }
+    }
+}
+
+/* Collect all files from Trie for persistence */
+void trie_get_all_files(TrieNode *root, char files[][256], int ss_ids[], int *count, int max_count)
+{
+    *count = 0;
+    if (root)
+    {
+        collect_files_recursive(root, files, ss_ids, count, max_count);
+    }
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_DEBUG, "Collected %d files from Trie", *count);
+    }
+}
+
+/* Save Trie to disk (Day 13) */
+int save_trie_to_disk(TrieNode *root)
+{
+    if (!root)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Cannot save NULL Trie");
+        }
+        return -1;
+    }
+
+    FILE *fp = fopen(TRIE_FILE, "wb");
+    if (!fp)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Failed to open Trie file for writing");
+        }
+        return -1;
+    }
+
+    // Collect all files from Trie
+    char files[512][256];
+    int ss_ids[512];
+    int count = 0;
+
+    trie_get_all_files(root, files, ss_ids, &count, 512);
+
+    // Write count
+    fwrite(&count, sizeof(int), 1, fp);
+
+    // Write each file path and SS ID
+    for (int i = 0; i < count; i++)
+    {
+        int path_len = strlen(files[i]) + 1;
+        fwrite(&path_len, sizeof(int), 1, fp);
+        fwrite(files[i], 1, path_len, fp);
+        fwrite(&ss_ids[i], sizeof(int), 1, fp);
+    }
+
+    fclose(fp);
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_INFO, "Saved %d file mappings to disk", count);
+    }
+
+    return 0;
+}
+
+/* Load Trie from disk (Day 13) */
+int load_trie_from_disk(TrieNode *root)
+{
+    if (!root)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Cannot load into NULL Trie");
+        }
+        return -1;
+    }
+
+    FILE *fp = fopen(TRIE_FILE, "rb");
+    if (!fp)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_INFO, "No Trie file found, starting fresh");
+        }
+        return 0; // Not an error - just starting fresh
+    }
+
+    // Read count
+    int count;
+    if (fread(&count, sizeof(int), 1, fp) != 1)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Failed to read Trie count");
+        }
+        fclose(fp);
+        return -1;
+    }
+
+    // Validate count
+    if (count < 0 || count > 512)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Invalid Trie count: %d", count);
+        }
+        fclose(fp);
+        return -1;
+    }
+
+    // Read and insert each file
+    for (int i = 0; i < count; i++)
+    {
+        int path_len;
+        char path[256];
+        int ss_id;
+
+        if (fread(&path_len, sizeof(int), 1, fp) != 1 ||
+            path_len <= 0 || path_len > 256)
+        {
+            if (global_logger)
+            {
+                log_message(global_logger, LOG_ERROR, "Invalid path length at entry %d", i);
+            }
+            fclose(fp);
+            return -1;
+        }
+
+        if (fread(path, 1, path_len, fp) != path_len ||
+            fread(&ss_id, sizeof(int), 1, fp) != 1)
+        {
+            if (global_logger)
+            {
+                log_message(global_logger, LOG_ERROR, "Failed to read Trie entry %d", i);
+            }
+            fclose(fp);
+            return -1;
+        }
+
+        // Insert into Trie
+        trie_insert(root, path, ss_id);
+    }
+
+    fclose(fp);
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_INFO, "Loaded %d file mappings from disk", count);
+    }
+
     return 0;
 }

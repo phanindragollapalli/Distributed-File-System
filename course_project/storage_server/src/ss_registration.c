@@ -1,3 +1,11 @@
+/*
+ * STORAGE SERVER REGISTRATION
+ * Person 1, Days 5-6
+ *
+ * Handles registration of Storage Server with Name Server.
+ * Sends server metadata and scans local directory to report available files.
+ */
+
 #define _DEFAULT_SOURCE
 #include "../include/ss_registration.h"
 #include "../../common/include/protocol.h"
@@ -7,7 +15,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
-// register_with_ns: sends registration info to NS, returns success
+// Register Storage Server with Name Server
 int register_with_ns(int ns_fd, const char *ss_ip, int ss_nm_port, int ss_client_port)
 {
     char msg[512];

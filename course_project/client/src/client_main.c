@@ -1,3 +1,11 @@
+/*
+ * CLIENT MAIN
+ * Person 1, Days 1-7
+ *
+ * Main entry point for Client application. Connects to Name Server,
+ * implements command loop for user interaction.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,7 +32,7 @@ int main()
     }
 
     // Connect to Name Server
-    int ns_fd = client_connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
     if (ns_fd < 0)
     {
         fprintf(stderr, "Failed to connect to Name Server\n");

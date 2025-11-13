@@ -1,11 +1,22 @@
+/*
+ * EXEC COMMAND HEADER
+ * Person 1, Day 12
+ *
+ * Executes file contents as shell commands on Name Server.
+ * File is retrieved from Storage Server, executed, and output returned to client.
+ */
+
 #ifndef NS_EXEC_H
 #define NS_EXEC_H
 
 #include <stddef.h>
+#include "ns_registration.h"
 
-// EXEC command - To be fully implemented in Week 2 (Day 12)
+// Execute file from Storage Server and capture output
+int execute_file_from_ss(StorageServerInfo *ss_info, const char *filename,
+                         char *output, size_t output_size, int ss_id);
 
-// Execute file contents as shell commands
+// Legacy function (deprecated)
 int execute_file(const char *filename, char *output, size_t output_size);
 
 #endif

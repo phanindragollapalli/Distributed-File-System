@@ -1,16 +1,26 @@
+/*
+ * FILE REQUEST ROUTING
+ * Person 1, Days 5-6
+ *
+ * Routes file requests to appropriate Storage Servers using Trie lookups.
+ * Implements load balancing and failover for multiple Storage Servers.
+ */
+
 #include "../include/ns_routing.h"
 #include "../include/ns_storage.h"
 #include "../include/ns_registration.h"
 #include "../../common/include/logger.h"
+#include "../include/ns_acl.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 extern Logger *global_logger;
 extern TrieNode *global_file_trie;
 extern StorageServerInfo *get_ss_by_id(int ss_id);
 
-// Route a file request to the appropriate storage server
+// Route a file request to the appropriate Storage Server
 int route_file_request(const char *filename, int *ss_id_out)
 {
     if (!filename || !global_file_trie)
@@ -67,4 +77,67 @@ int send_ss_info_to_client(int client_fd, StorageServerInfo *ss_info)
     log_message(global_logger, LOG_INFO, "Sent SS info to client: %s:%d",
                 ss_info->ss_ip, ss_info->ss_client_port);
     return 0;
+}
+
+void handle_access_request(int client_sock, char *msg, const char *client_user)
+{
+    char op[32], flag[8], filename[128], target_user[64];
+
+    int parts = sscanf(msg, "%[^:]:%[^:]:%[^:]:%s", op, flag, filename, target_user);
+    if (parts < 3)
+    {
+        send(client_sock, "ERR:INVALID_FORMAT", 18, 0);
+        return;
+    }
+
+    // Permission check
+    FileACL *fa = acl_get(filename);
+    if (!fa)
+    {
+        send(client_sock, "ERR:FILE_NOT_FOUND", 18, 0);
+        return;
+    }
+
+    if (strcmp(fa->owner, client_user) != 0)
+    {
+        send(client_sock, "ERR:NOT_OWNER", 13, 0);
+        return;
+    }
+
+    // ---------------------
+    // ADDACCESS -R / -W
+    // ---------------------
+    if (strcmp(op, "ADDACCESS") == 0)
+    {
+        if (strcmp(flag, "-R") == 0)
+        {
+            acl_add_read(filename, target_user);
+            send(client_sock, "OK:READ_GRANTED", 15, 0);
+            return;
+        }
+        if (strcmp(flag, "-W") == 0)
+        {
+            acl_add_write(filename, target_user);
+            send(client_sock, "OK:WRITE_GRANTED", 16, 0);
+            return;
+        }
+        send(client_sock, "ERR:INVALID_FLAG", 16, 0);
+        return;
+    }
+
+    // ---------------------
+    // REMOVE ACCESS
+    // ---------------------
+    if (strcmp(op, "REMACCESS") == 0)
+    {
+        if (!acl_remove_access(filename, target_user))
+        {
+            send(client_sock, "ERR:REMOVE_FAILED", 17, 0);
+            return;
+        }
+        send(client_sock, "OK:ACCESS_REMOVED", 17, 0);
+        return;
+    }
+
+    send(client_sock, "ERR:UNKNOWN_ACCESS_OP", 21, 0);
 }

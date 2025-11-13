@@ -1,3 +1,11 @@
+/*
+ * LOGGER MODULE HEADER
+ * Person 1, Days 1-2 and Day 7
+ *
+ * Provides logging infrastructure with multiple log levels,
+ * file and terminal output, and timestamp support.
+ */
+
 #ifndef LOGGER_H
 #define LOGGER_H
 

@@ -1,9 +1,24 @@
+/*
+ * NAME SERVER MAIN - Person 1, Day 3-4
+ * Central coordinator of the distributed file system (similar to HDFS NameNode)
+ * Responsibilities:
+ * - Accept connections from Storage Servers and Clients on separate ports
+ * - Register Storage Servers and track their file lists
+ * - Register Clients and handle their requests
+ * - Route file requests to appropriate Storage Server using Trie lookup
+ * - Maintain file metadata and provide efficient search using LRU cache
+ * Uses pthread for concurrent connection handling
+ */
+
 #include "../../common/include/protocol.h"
 #include "../include/ns_network.h"
 #include "../include/ns_registration.h"
 #include "../include/ns_storage.h"
 #include "../include/ns_routing.h"
 #include "../include/ns_metadata.h"
+#include "../include/ns_acl.h"
+#include "../include/ns_cache.h"
+#include "../include/ns_exec.h"
 #include "../../common/include/logger.h"
 #include "../../common/include/error_codes.h"
 #include <stdio.h>
@@ -11,11 +26,463 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <signal.h>
 
 Logger *global_logger = NULL;
 TrieNode *global_file_trie = NULL;
 
-// Handler for storage server connections
+/* ========== DAY 13: AUTO-SAVE FUNCTIONALITY ========== */
+
+static pthread_t auto_save_thread;
+static int auto_save_running = 0;
+#define AUTO_SAVE_INTERVAL 30 // seconds
+
+/* Auto-save thread function - saves state every 30 seconds */
+void *auto_save_thread_func(void *arg)
+{
+    log_message(global_logger, LOG_INFO, "Auto-save thread started (interval: %d seconds)", AUTO_SAVE_INTERVAL);
+
+    while (auto_save_running)
+    {
+        sleep(AUTO_SAVE_INTERVAL);
+
+        if (auto_save_running)
+        {
+            log_message(global_logger, LOG_DEBUG, "Auto-save triggered");
+
+            // Save Trie
+            if (save_trie_to_disk(global_file_trie) == 0)
+            {
+                log_message(global_logger, LOG_DEBUG, "Trie auto-saved");
+            }
+
+            // Save metadata
+            if (save_metadata_to_disk() == 0)
+            {
+                log_message(global_logger, LOG_DEBUG, "Metadata auto-saved");
+            }
+
+            // ACL saves itself automatically
+
+            log_message(global_logger, LOG_INFO, "Auto-save completed");
+        }
+    }
+
+    log_message(global_logger, LOG_INFO, "Auto-save thread stopped");
+    return NULL;
+}
+
+/* Start auto-save thread */
+int start_auto_save()
+{
+    if (auto_save_running)
+    {
+        return 0;
+    }
+
+    auto_save_running = 1;
+
+    if (pthread_create(&auto_save_thread, NULL, auto_save_thread_func, NULL) != 0)
+    {
+        log_message(global_logger, LOG_ERROR, "Failed to create auto-save thread");
+        auto_save_running = 0;
+        return -1;
+    }
+
+    pthread_detach(auto_save_thread);
+    log_message(global_logger, LOG_INFO, "Auto-save thread started");
+    return 0;
+}
+
+/* Stop auto-save thread */
+void stop_auto_save()
+{
+    if (!auto_save_running)
+    {
+        return;
+    }
+
+    log_message(global_logger, LOG_INFO, "Stopping auto-save thread...");
+    auto_save_running = 0;
+}
+
+/* Emergency save on signal (SIGINT, SIGTERM) */
+void emergency_save_handler(int signum)
+{
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_WARN, "Received signal %d, performing emergency save", signum);
+    }
+
+    stop_auto_save();
+
+    // Save all state
+    if (global_file_trie)
+    {
+        save_trie_to_disk(global_file_trie);
+    }
+
+    save_metadata_to_disk();
+    acl_save_database();
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_INFO, "Emergency save completed");
+    }
+
+    exit(0);
+}
+
+/* ========== END DAY 13 AUTO-SAVE ========== */
+
+/* Helper: Send error response to client */
+void send_error_to_client(int client_fd, const char *error_msg)
+{
+    char response[512];
+    snprintf(response, sizeof(response), "ERROR: %s\n", error_msg);
+    write(client_fd, response, strlen(response));
+}
+
+/* Handle VIEW command - Person 1, Day 8-9
+ * Client requests to view a file
+ * Process: Check Trie → Check ACL → Return SS info
+ */
+void handle_view_request(int client_fd, const char *filename, const char *username)
+{
+    log_message(global_logger, LOG_INFO, "VIEW request: file='%s', user='%s'", filename, username);
+
+    // 1. Check LRU cache first for speed
+    int ss_id;
+    int found_in_cache = lru_get(filename, &ss_id);
+
+    // 2. If not in cache, search Trie
+    if (!found_in_cache)
+    {
+        if (!trie_search(global_file_trie, filename, &ss_id))
+        {
+            log_message(global_logger, LOG_WARN, "File not found: %s", filename);
+            send_error_to_client(client_fd, "File not found");
+            return;
+        }
+        // Add to cache for future requests
+        lru_put(filename, ss_id);
+    }
+
+    // 3. Check ACL permissions (user must have READ access)
+    if (!acl_can_read(filename, username))
+    {
+        log_message(global_logger, LOG_WARN, "Permission denied: user='%s', file='%s'", username, filename);
+        send_error_to_client(client_fd, "Permission denied. You need READ access to view this file");
+        return;
+    }
+
+    // 4. Get Storage Server info
+    StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+    if (!ss_info)
+    {
+        log_message(global_logger, LOG_ERROR, "SS_ID=%d not found", ss_id);
+        send_error_to_client(client_fd, "Storage Server not available");
+        return;
+    }
+
+    // 5. Send SS info to client
+    send_ss_info_to_client(client_fd, ss_info);
+}
+
+/* Handle LIST command - Person 1, Day 8-9
+ * Client requests list of all accessible files
+ * Process: Iterate metadata → Check ACL for each → Return file list with permissions
+ */
+void handle_list_request(int client_fd, const char *username)
+{
+    log_message(global_logger, LOG_INFO, "LIST request from user='%s'", username);
+
+    char response[4096] = "FILE_LIST\n";
+    int accessible_count = 0;
+
+    // Get all files from metadata
+    char all_files[512][256];
+    int total_files = list_all_files(all_files, 512);
+
+    // Check ACL for each file
+    for (int i = 0; i < total_files; i++)
+    {
+        char perms[32] = "";
+        int has_read = acl_can_read(all_files[i], username);
+        int has_write = acl_can_write(all_files[i], username);
+
+        if (has_read || has_write)
+        {
+            if (has_read && has_write)
+                strcpy(perms, "READ,WRITE");
+            else if (has_read)
+                strcpy(perms, "READ");
+            else if (has_write)
+                strcpy(perms, "WRITE");
+
+            char line[300];
+            snprintf(line, sizeof(line), "%s %s\n", all_files[i], perms);
+            strcat(response, line);
+            accessible_count++;
+        }
+    }
+
+    if (accessible_count == 0)
+    {
+        strcpy(response, "NO_FILES\n");
+    }
+
+    write(client_fd, response, strlen(response));
+    log_message(global_logger, LOG_INFO, "LIST: Sent %d accessible files to user='%s'",
+                accessible_count, username);
+}
+
+/* Handle INFO command - Person 1, Day 8-9
+ * Client requests metadata for a specific file
+ * Process: Check Trie → Check ACL → Get metadata → Return info
+ */
+void handle_info_request(int client_fd, const char *filename, const char *username)
+{
+    log_message(global_logger, LOG_INFO, "INFO request: file='%s', user='%s'", filename, username);
+
+    // 1. Check if file exists in Trie
+    int ss_id;
+    if (!trie_search(global_file_trie, filename, &ss_id))
+    {
+        log_message(global_logger, LOG_WARN, "File not found: %s", filename);
+        send_error_to_client(client_fd, "File not found in the system");
+        return;
+    }
+
+    // 2. Check ACL (user needs at least READ permission to view info)
+    if (!acl_can_read(filename, username) && !acl_can_write(filename, username))
+    {
+        log_message(global_logger, LOG_WARN, "Permission denied for INFO: user='%s', file='%s'",
+                    username, filename);
+        send_error_to_client(client_fd, "Permission denied. You need access to view file info");
+        return;
+    }
+
+    // 3. Get file metadata
+    FileMetadata *metadata = get_file_metadata(filename);
+    if (!metadata)
+    {
+        log_message(global_logger, LOG_ERROR, "Metadata not found for file: %s", filename);
+        send_error_to_client(client_fd, "File metadata not available");
+        return;
+    }
+
+    // 4. Build permissions string
+    char perms[32] = "";
+    int has_read = acl_can_read(filename, username);
+    int has_write = acl_can_write(filename, username);
+    if (has_read && has_write)
+        strcpy(perms, "READ,WRITE");
+    else if (has_read)
+        strcpy(perms, "READ");
+    else if (has_write)
+        strcpy(perms, "WRITE");
+
+    // 5. Send metadata to client (format: FILE_INFO\nfield1\nfield2\n...)
+    char response[2048];
+    snprintf(response, sizeof(response),
+             "FILE_INFO\n%s\n%s\n%ld\n%ld\n%ld\n%ld\n%s\n%d\n",
+             metadata->filename,
+             metadata->owner,
+             (long)metadata->size,
+             (long)metadata->created,
+             (long)metadata->modified,
+             (long)metadata->last_accessed,
+             perms,
+             metadata->storage_server_id);
+
+    write(client_fd, response, strlen(response));
+    log_message(global_logger, LOG_INFO, "INFO: Sent metadata for file='%s' to user='%s'",
+                filename, username);
+}
+
+/* Handle GRANT command - Person 1, Day 10-11
+ * File owner grants READ or WRITE permission to another user
+ * Process: Check ownership → Call ACL grant → Return success/error
+ */
+void handle_grant_request(int client_fd, const char *filename, const char *requester,
+                          const char *target_user, const char *permission)
+{
+    log_message(global_logger, LOG_INFO, "GRANT request: file='%s', requester='%s', target='%s', perm='%s'",
+                filename, requester, target_user, permission);
+
+    // 1. Check if file exists
+    int ss_id;
+    if (!trie_search(global_file_trie, filename, &ss_id))
+    {
+        send_error_to_client(client_fd, "File not found");
+        return;
+    }
+
+    // 2. Get file metadata to check owner
+    FileMetadata *metadata = get_file_metadata(filename);
+    if (!metadata)
+    {
+        send_error_to_client(client_fd, "File metadata not found");
+        return;
+    }
+
+    // 3. Verify requester is the file owner
+    if (strcmp(metadata->owner, requester) != 0)
+    {
+        log_message(global_logger, LOG_WARN, "GRANT denied: user='%s' is not owner of '%s'",
+                    requester, filename);
+        send_error_to_client(client_fd, "Only the file owner can grant permissions");
+        return;
+    }
+
+    // 4. Parse permission type and call ACL function
+    bool success = false;
+    if (strcmp(permission, "READ") == 0)
+    {
+        success = acl_add_read(filename, target_user);
+    }
+    else if (strcmp(permission, "WRITE") == 0)
+    {
+        success = acl_add_write(filename, target_user);
+    }
+    else
+    {
+        send_error_to_client(client_fd, "Invalid permission type. Use READ or WRITE");
+        return;
+    }
+
+    // 5. Send response
+    if (success)
+    {
+        const char *ack = "SUCCESS\n";
+        write(client_fd, ack, strlen(ack));
+        log_message(global_logger, LOG_INFO, "GRANT successful: '%s' permission on '%s' to '%s'",
+                    permission, filename, target_user);
+    }
+    else
+    {
+        send_error_to_client(client_fd, "Failed to grant permission");
+    }
+}
+
+/* Handle REVOKE command - Person 1, Day 10-11
+ * File owner revokes READ or WRITE permission from a user
+ * Process: Check ownership → Call ACL revoke → Return success/error
+ */
+void handle_revoke_request(int client_fd, const char *filename, const char *requester,
+                           const char *target_user, const char *permission)
+{
+    log_message(global_logger, LOG_INFO, "REVOKE request: file='%s', requester='%s', target='%s', perm='%s'",
+                filename, requester, target_user, permission);
+
+    // 1. Check if file exists
+    int ss_id;
+    if (!trie_search(global_file_trie, filename, &ss_id))
+    {
+        send_error_to_client(client_fd, "File not found");
+        return;
+    }
+
+    // 2. Get file metadata to check owner
+    FileMetadata *metadata = get_file_metadata(filename);
+    if (!metadata)
+    {
+        send_error_to_client(client_fd, "File metadata not found");
+        return;
+    }
+
+    // 3. Verify requester is the file owner
+    if (strcmp(metadata->owner, requester) != 0)
+    {
+        log_message(global_logger, LOG_WARN, "REVOKE denied: user='%s' is not owner of '%s'",
+                    requester, filename);
+        send_error_to_client(client_fd, "Only the file owner can revoke permissions");
+        return;
+    }
+
+    // 4. Revoke permission via ACL
+    bool success = acl_remove_access(filename, target_user);
+
+    // 5. Send response
+    if (success)
+    {
+        const char *ack = "SUCCESS\n";
+        write(client_fd, ack, strlen(ack));
+        log_message(global_logger, LOG_INFO, "REVOKE successful: '%s' permission on '%s' from '%s'",
+                    permission, filename, target_user);
+    }
+    else
+    {
+        send_error_to_client(client_fd, "Failed to revoke permission");
+    }
+}
+
+/* Handle EXEC command - Person 1, Day 12
+ * Client requests to execute a file stored in distributed file system
+ * Process: Check Trie → Check ACL → Get file from SS → Execute → Return output
+ */
+void handle_exec_request(int client_fd, const char *filename, const char *username)
+{
+    log_message(global_logger, LOG_INFO, "EXEC request: file='%s', user='%s'", filename, username);
+
+    // 1. Check if file exists in Trie
+    int ss_id;
+    if (!trie_search(global_file_trie, filename, &ss_id))
+    {
+        send_error_to_client(client_fd, "File not found");
+        return;
+    }
+
+    // 2. Check ACL permissions (user must have READ access to execute)
+    if (!acl_can_read(filename, username))
+    {
+        log_message(global_logger, LOG_WARN, "EXEC denied: user='%s' lacks READ access to '%s'",
+                    username, filename);
+        send_error_to_client(client_fd, "Permission denied. You need READ access to execute this file");
+        return;
+    }
+
+    // 3. Get Storage Server info
+    StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+    if (!ss_info)
+    {
+        send_error_to_client(client_fd, "Storage Server not available");
+        return;
+    }
+
+    log_message(global_logger, LOG_INFO, "EXEC: Found file '%s' on SS_%d (%s:%d)",
+                filename, ss_id, ss_info->ss_ip, ss_info->ss_nm_port);
+
+    // 4. Execute file and capture output
+    char output[65536]; // 64KB output buffer
+    int result = execute_file_from_ss(ss_info, filename, output, sizeof(output), ss_id);
+
+    // 5. Send output to client
+    if (result == 0)
+    {
+        // Send success header + output
+        char response[70000]; // Slightly larger than output buffer
+        snprintf(response, sizeof(response), "EXEC_OUTPUT\n%s", output);
+        write(client_fd, response, strlen(response));
+
+        log_message(global_logger, LOG_INFO, "EXEC successful: file='%s', output_size=%zu",
+                    filename, strlen(output));
+    }
+    else
+    {
+        // Send error from execution
+        write(client_fd, output, strlen(output));
+        log_message(global_logger, LOG_ERROR, "EXEC failed: file='%s', error='%s'",
+                    filename, output);
+    }
+}
+
+/* Thread handler for Storage Server connections - Person 1, Day 5-6
+ * Processes SS registration, receives file list, inserts files into Trie
+ * Sends ACK back to Storage Server upon successful registration
+ */
 void *handle_storage_server(void *arg)
 {
     int conn_fd = *(int *)arg;
@@ -24,7 +491,7 @@ void *handle_storage_server(void *arg)
     char buffer[4096];
     int bytes_read;
 
-    // Read registration message
+    /* Read and parse registration message from Storage Server */
     bytes_read = read(conn_fd, buffer, sizeof(buffer) - 1);
     if (bytes_read <= 0)
     {
@@ -34,7 +501,7 @@ void *handle_storage_server(void *arg)
     }
     buffer[bytes_read] = '\0';
 
-    // Parse REGISTER_SS message
+    /* Extract SS IP, Name Server port, and Client port from registration message */
     char ss_ip[32];
     int ss_nm_port, ss_client_port;
     if (sscanf(buffer, "REGISTER_SS %s %d %d", ss_ip, &ss_nm_port, &ss_client_port) == 3)
@@ -42,11 +509,11 @@ void *handle_storage_server(void *arg)
         log_message(global_logger, LOG_INFO, "Received SS registration: %s:%d (client:%d)",
                     ss_ip, ss_nm_port, ss_client_port);
 
-        // Collect file list
+        /* Prepare to collect list of accessible files from this Storage Server */
         char files[128][128];
         int file_count = 0;
 
-        // Read file list
+        /* Read file list messages until END_FILE_LIST marker */
         while (1)
         {
             bytes_read = read(conn_fd, buffer, sizeof(buffer) - 1);
@@ -54,7 +521,7 @@ void *handle_storage_server(void *arg)
                 break;
             buffer[bytes_read] = '\0';
 
-            // Parse FILE messages
+            /* Parse FILE messages line by line */
             char *line = strtok(buffer, "\n");
             while (line != NULL)
             {
@@ -75,11 +542,11 @@ void *handle_storage_server(void *arg)
         }
 
     done_reading:
-        // Register the storage server
+        /* Register the Storage Server and get assigned SS_ID */
         int ss_id = register_storage_server(ss_ip, ss_nm_port, ss_client_port,
                                             (const char (*)[128])files, file_count);
 
-        // Insert files into trie
+        /* Insert all files into Trie for efficient O(m) lookup where m is path length */
         for (int i = 0; i < file_count; i++)
         {
             trie_insert(global_file_trie, files[i], ss_id);
@@ -88,7 +555,7 @@ void *handle_storage_server(void *arg)
                         files[i], ss_id);
         }
 
-        // Send ACK
+        /* Send acknowledgment to Storage Server confirming successful registration */
         const char *ack = "ACK REGISTERED\n";
         write(conn_fd, ack, strlen(ack));
 
@@ -105,7 +572,8 @@ void *handle_storage_server(void *arg)
     return NULL;
 }
 
-// Handler for client connections
+// Handler for client connections - Person 1, Days 8-11
+// Routes client commands to appropriate handlers
 void *handle_client(void *arg)
 {
     int conn_fd = *(int *)arg;
@@ -124,11 +592,26 @@ void *handle_client(void *arg)
     }
     buffer[bytes_read] = '\0';
 
-    // Parse REGISTER_CLIENT message
-    char username[32], client_ip[32];
-    int client_port;
-    if (sscanf(buffer, "REGISTER_CLIENT %s %s %d", username, client_ip, &client_port) == 3)
+    // Parse command type
+    char cmd[64], arg1[256], arg2[256], arg3[64], arg4[64];
+    int parsed = sscanf(buffer, "%63s %255s %255s %63s %63s", cmd, arg1, arg2, arg3, arg4);
+
+    if (parsed < 1)
     {
+        log_message(global_logger, LOG_WARN, "Invalid command received");
+        send_error_to_client(conn_fd, "Invalid command format");
+        close(conn_fd);
+        return NULL;
+    }
+
+    // Handle REGISTER_CLIENT
+    if (strcmp(cmd, "REGISTER_CLIENT") == 0 && parsed >= 4)
+    {
+        // Format: REGISTER_CLIENT <username> <client_ip> <client_port>
+        char *username = arg1;
+        char *client_ip = arg2;
+        int client_port = atoi(arg3);
+
         int client_id = register_client(username, client_ip, client_port);
         log_message(global_logger, LOG_INFO, "Registered client: %s (%s:%d) with ID=%d",
                     username, client_ip, client_port, client_id);
@@ -136,10 +619,40 @@ void *handle_client(void *arg)
         const char *ack = "ACK CLIENT_REGISTERED\n";
         write(conn_fd, ack, strlen(ack));
     }
+    // Handle VIEW command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "VIEW") == 0 && parsed >= 3)
+    {
+        handle_view_request(conn_fd, arg1, arg2);
+    }
+    // Handle LIST command - arg1=username
+    else if (strcmp(cmd, "LIST") == 0 && parsed >= 2)
+    {
+        handle_list_request(conn_fd, arg1);
+    }
+    // Handle INFO command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "INFO") == 0 && parsed >= 3)
+    {
+        handle_info_request(conn_fd, arg1, arg2);
+    }
+    // Handle GRANT command - arg1=filename, arg2=requester, arg3=target_user, arg4=permission
+    else if (strcmp(cmd, "GRANT") == 0 && parsed >= 5)
+    {
+        handle_grant_request(conn_fd, arg1, arg2, arg3, arg4);
+    }
+    // Handle REVOKE command - arg1=filename, arg2=requester, arg3=target_user, arg4=permission
+    else if (strcmp(cmd, "REVOKE") == 0 && parsed >= 5)
+    {
+        handle_revoke_request(conn_fd, arg1, arg2, arg3, arg4);
+    }
+    // Handle EXEC command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "EXEC") == 0 && parsed >= 3)
+    {
+        handle_exec_request(conn_fd, arg1, arg2);
+    }
     else
     {
-        log_message(global_logger, LOG_WARN, "Client connected without proper registration");
-        // Handle client commands here in future
+        log_message(global_logger, LOG_WARN, "Unknown or malformed command: %s", cmd);
+        send_error_to_client(conn_fd, "Unknown command or invalid format");
     }
 
     close(conn_fd);
@@ -162,8 +675,56 @@ int main()
     global_file_trie = trie_create_node();
     log_message(global_logger, LOG_INFO, "Initialized file Trie");
 
+    // Initialize LRU cache (capacity 16)
+    // Note: cache is initialized internally in ns_cache.c
+    log_message(global_logger, LOG_INFO, "Initialized LRU cache");
+
     // Initialize metadata storage
     init_metadata_storage();
+
+    /* ========== DAY 13: LOAD PERSISTENT STATE ========== */
+    log_message(global_logger, LOG_INFO, "Loading persistent state...");
+
+    // Load Trie from disk
+    if (load_trie_from_disk(global_file_trie) == 0)
+    {
+        log_message(global_logger, LOG_INFO, "Trie state restored from disk");
+    }
+    else
+    {
+        log_message(global_logger, LOG_WARN, "Failed to load Trie state, starting fresh");
+    }
+
+    // Load metadata from disk
+    if (load_metadata_from_disk() == 0)
+    {
+        log_message(global_logger, LOG_INFO, "Metadata restored from disk");
+    }
+    else
+    {
+        log_message(global_logger, LOG_WARN, "Failed to load metadata, starting fresh");
+    }
+
+    // Initialize ACL system
+    acl_load_database();
+    log_message(global_logger, LOG_INFO, "Initialized ACL system");
+
+    /* ========== DAY 13: SETUP SIGNAL HANDLERS AND AUTO-SAVE ========== */
+    // Register signal handlers for graceful shutdown
+    signal(SIGINT, emergency_save_handler);
+    signal(SIGTERM, emergency_save_handler);
+    log_message(global_logger, LOG_INFO, "Signal handlers registered");
+
+    // Start auto-save thread
+    if (start_auto_save() == 0)
+    {
+        log_message(global_logger, LOG_INFO, "Auto-save enabled (every %d seconds)", AUTO_SAVE_INTERVAL);
+    }
+    else
+    {
+        log_message(global_logger, LOG_WARN, "Auto-save disabled (failed to start)");
+    }
+    /* ========== END DAY 13 SETUP ========== */
 
     int server_fd = ns_server_init(NS_PORT);
     if (server_fd < 0)
@@ -175,6 +736,9 @@ int main()
 
     log_message(global_logger, LOG_INFO, "Name Server ready, accepting connections");
     printf("Name Server running on port %d\n", NS_PORT);
+    printf("Commands: VIEW, LIST, INFO, GRANT, REVOKE, EXEC\n");
+    printf("Persistence: Enabled (auto-save every %d seconds)\n", AUTO_SAVE_INTERVAL);
+    printf("Press Ctrl+C for graceful shutdown\n");
 
     while (1)
     {
@@ -187,25 +751,53 @@ int main()
 
         log_connection(global_logger, "ACCEPTED", "connection", conn_fd);
 
-        // Create thread to handle connection
-        pthread_t thread_id;
-        int *conn_fd_ptr = malloc(sizeof(int));
-        *conn_fd_ptr = conn_fd;
+        // Peek at the first few bytes to determine connection type
+        char peek_buffer[64];
+        int peek_bytes = recv(conn_fd, peek_buffer, sizeof(peek_buffer) - 1, MSG_PEEK);
 
-        // For now, assume it's a storage server (we'll improve detection later)
-        // A proper implementation would peek at the message to determine type
-        if (pthread_create(&thread_id, NULL, handle_storage_server, conn_fd_ptr) != 0)
+        if (peek_bytes > 0)
         {
-            log_message(global_logger, LOG_ERROR, "Failed to create handler thread");
-            free(conn_fd_ptr);
-            close(conn_fd);
+            peek_buffer[peek_bytes] = '\0';
+
+            // Create thread to handle connection
+            pthread_t thread_id;
+            int *conn_fd_ptr = malloc(sizeof(int));
+            *conn_fd_ptr = conn_fd;
+
+            // Determine handler based on message prefix
+            void *(*handler)(void *) = handle_client; // Default to client handler
+
+            if (strncmp(peek_buffer, "REGISTER_SS", 11) == 0)
+            {
+                handler = handle_storage_server;
+                log_message(global_logger, LOG_DEBUG, "Routing to SS handler");
+            }
+            else
+            {
+                log_message(global_logger, LOG_DEBUG, "Routing to client handler");
+            }
+
+            if (pthread_create(&thread_id, NULL, handler, conn_fd_ptr) != 0)
+            {
+                log_message(global_logger, LOG_ERROR, "Failed to create handler thread");
+                free(conn_fd_ptr);
+                close(conn_fd);
+            }
+            else
+            {
+                pthread_detach(thread_id);
+            }
         }
         else
         {
-            pthread_detach(thread_id);
+            log_message(global_logger, LOG_ERROR, "Failed to peek at connection");
+            close(conn_fd);
         }
     }
 
+    // Cleanup (unreachable in current design)
+    acl_save_database();
+    lru_cache_free();
     logger_close(global_logger);
     return 0;
 }

@@ -1,3 +1,11 @@
+/*
+ * STORAGE SERVER PERSISTENCE MODULE
+ * Person 1, Days 6-7
+ *
+ * Manages persistent storage of file metadata for crash recovery.
+ * Stores and loads metadata to ensure data survives server restarts.
+ */
+
 #include "../include/ss_persistence.h"
 #include "../../common/include/logger.h"
 #include <stdio.h>

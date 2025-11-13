@@ -1,3 +1,11 @@
+/*
+ * STORAGE SERVER COMMAND HANDLER
+ * Person 1, Days 5-7
+ *
+ * Processes commands received from Name Server (CREATE, DELETE, etc.).
+ * Note: Actual file operations are implemented by Person 2 in file_operations.c
+ */
+
 #include "../include/ss_commands.h"
 #include "../include/ss_persistence.h"
 #include "../../common/include/logger.h"
@@ -8,6 +16,7 @@
 
 extern Logger *ss_logger;
 
+// Handle command from Name Server
 int ss_handle_ns_command(int ns_fd, const char *storage_dir)
 {
     char buf[256];
@@ -66,6 +75,52 @@ int ss_handle_ns_command(int ns_fd, const char *storage_dir)
                 log_message(ss_logger, LOG_ERROR, "Failed to delete file: %s", arg);
             }
             write(ns_fd, "ERROR DELETE_FAILED\n", 20);
+        }
+    }
+    else if (strcmp(cmd, "GET_FILE") == 0)
+    {
+        // GET_FILE command - Person 1, Day 12
+        // NS requests file content for EXEC command
+        // Read entire file and send to NS
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s", storage_dir, arg);
+
+        FILE *f = fopen(path, "r");
+        if (!f)
+        {
+            if (ss_logger)
+            {
+                log_message(ss_logger, LOG_ERROR, "GET_FILE failed: file not found: %s", arg);
+            }
+            write(ns_fd, "ERROR: File not found\n", 22);
+            return 1;
+        }
+
+        // Read and send file contents
+        char buffer[4096];
+        size_t bytes_read;
+        size_t total_sent = 0;
+
+        while ((bytes_read = fread(buffer, 1, sizeof(buffer), f)) > 0)
+        {
+            ssize_t sent = write(ns_fd, buffer, bytes_read);
+            if (sent < 0)
+            {
+                if (ss_logger)
+                {
+                    log_message(ss_logger, LOG_ERROR, "GET_FILE: Failed to send data");
+                }
+                break;
+            }
+            total_sent += sent;
+        }
+
+        fclose(f);
+
+        if (ss_logger)
+        {
+            log_message(ss_logger, LOG_INFO, "GET_FILE: Sent %zu bytes for file: %s",
+                        total_sent, arg);
         }
     }
     return 1;

@@ -1,8 +1,15 @@
+/*
+ * ERROR CODES MODULE - Person 1, Day 1-2 and Day 7
+ * Comprehensive error handling system used across Name Server, Storage Server, and Client
+ * Defines 18 error codes covering all failure scenarios in the distributed file system
+ */
+
 #include "../include/error_codes.h"
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 
+/* Convert error code enum to human-readable string for logging and display */
 const char *error_code_to_string(ErrorCode code)
 {
     switch (code)
@@ -48,6 +55,7 @@ const char *error_code_to_string(ErrorCode code)
     }
 }
 
+/* Send error response message to client/server over socket connection */
 void send_error_response(int fd, ErrorCode code)
 {
     char msg[256];
@@ -55,6 +63,7 @@ void send_error_response(int fd, ErrorCode code)
     write(fd, msg, strlen(msg));
 }
 
+/* Parse error response string received from socket to extract error code */
 ErrorCode parse_error_response(const char *msg)
 {
     int code;

@@ -1,3 +1,11 @@
+/*
+ * ERROR CODES MODULE HEADER
+ * Person 1, Days 1-2 and Day 7
+ *
+ * Defines error codes used throughout the system for consistent
+ * error handling and reporting.
+ */
+
 #ifndef ERROR_CODES_H
 #define ERROR_CODES_H
 

@@ -1,43 +1,64 @@
+/*
+ * ACCESS CONTROL LISTS HEADER
+ * Person 1, Days 10-11
+ *
+ * Defines structures and functions for file access control.
+ * Implements READ/WRITE permissions and GRANT/REVOKE operations.
+ * Implementation is COMPLETE in ns_acl.c
+ */
+
 #ifndef NS_ACL_H
 #define NS_ACL_H
 
-// ACL (Access Control List) System - To be fully implemented in Week 2 (Days 10-11)
+#include <stdbool.h>
 
-typedef enum
-{
-    PERM_NONE = 0,
-    PERM_READ = 1,
-    PERM_WRITE = 2,
-    PERM_READ_WRITE = 3
-} Permission;
+#define MAX_USERS 64
+#define MAX_FILES 1024
+#define USERNAME_LEN 64
+#define FILENAME_LEN 128
 
-typedef struct ACLEntry
-{
-    char username[32];
-    Permission perm;
-} ACLEntry;
+// Access rights mask
+#define ACCESS_READ 1
+#define ACCESS_WRITE 2
 
-typedef struct FileACL
+typedef struct
 {
-    char filename[256];
-    char owner[32];
-    ACLEntry entries[32];
+    char username[USERNAME_LEN];
+    int rights; // bitmask: READ=1, WRITE=2
+} ACL_Entry;
+
+typedef struct
+{
+    char filename[FILENAME_LEN];
+    char owner[USERNAME_LEN];
     int entry_count;
+    ACL_Entry entries[MAX_USERS];
 } FileACL;
 
-// Initialize ACL system
-void init_acl_system();
+// ========== PUBLIC NS API ==========
 
-// Add permission for user on file
-int add_permission(const char *filename, const char *username, Permission perm);
+// Load ACL DB from disk
+void acl_load_database();
 
-// Remove all permissions for user on file
-int remove_permission(const char *filename, const char *username);
+// Save ACL DB
+void acl_save_database();
 
-// Check if user has permission on file
-int check_permission(const char *filename, const char *username, Permission perm);
+// Find ACL record by filename
+FileACL *acl_get(const char *filename);
 
-// Get file ACL
-FileACL *get_file_acl(const char *filename);
+// Create ACL record for new file
+void acl_create_file(const char *filename, const char *owner);
+
+// Remove ACL record of deleted file
+void acl_delete_file(const char *filename);
+
+// Modify ACL
+bool acl_add_read(const char *filename, const char *user);
+bool acl_add_write(const char *filename, const char *user);
+bool acl_remove_access(const char *filename, const char *user);
+
+// Check permissions
+bool acl_can_read(const char *filename, const char *user);
+bool acl_can_write(const char *filename, const char *user);
 
 #endif

@@ -1,9 +1,18 @@
+/*
+ * NAME SERVER NETWORK MODULE
+ * Person 1, Days 3-4
+ *
+ * Handles TCP socket initialization and connection acceptance for Name Server.
+ * Uses POSIX sockets API for network communication.
+ */
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "ns_network.h"
 
+// Initialize Name Server socket and bind to specified port
 int ns_server_init(int port)
 {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);

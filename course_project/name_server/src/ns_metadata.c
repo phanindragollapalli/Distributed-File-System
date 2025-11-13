@@ -1,3 +1,11 @@
+/*
+ * FILE METADATA MANAGEMENT
+ * Person 1, Days 5-6
+ *
+ * Manages file metadata including owner, size, permissions, timestamps.
+ * Provides operations to add, retrieve, update, and delete file metadata.
+ */
+
 #include "../include/ns_metadata.h"
 #include "../../common/include/logger.h"
 #include <string.h>
@@ -6,6 +14,7 @@
 
 extern Logger *global_logger;
 
+// Metadata storage (max 512 files)
 static FileMetadata metadata_list[512];
 static int metadata_count = 0;
 
@@ -153,4 +162,95 @@ int list_all_files(char files[][256], int max_count)
 int get_file_count()
 {
     return metadata_count;
+}
+
+/* ========== DAY 13: PERSISTENCE FUNCTIONS ========== */
+
+#define METADATA_FILE "name_server/data/metadata.dat"
+
+// Save metadata to disk (Day 13)
+int save_metadata_to_disk()
+{
+    FILE *fp = fopen(METADATA_FILE, "wb");
+    if (!fp)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Failed to open metadata file for writing");
+        }
+        return -1;
+    }
+
+    // Write count
+    fwrite(&metadata_count, sizeof(int), 1, fp);
+
+    // Write all metadata entries
+    fwrite(metadata_list, sizeof(FileMetadata), metadata_count, fp);
+
+    fclose(fp);
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_INFO, "Saved %d metadata entries to disk", metadata_count);
+    }
+
+    return 0;
+}
+
+// Load metadata from disk (Day 13)
+int load_metadata_from_disk()
+{
+    FILE *fp = fopen(METADATA_FILE, "rb");
+    if (!fp)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_INFO, "No metadata file found, starting fresh");
+        }
+        return 0; // Not an error - just starting fresh
+    }
+
+    // Read count
+    if (fread(&metadata_count, sizeof(int), 1, fp) != 1)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Failed to read metadata count");
+        }
+        fclose(fp);
+        return -1;
+    }
+
+    // Validate count
+    if (metadata_count < 0 || metadata_count > 512)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Invalid metadata count: %d", metadata_count);
+        }
+        fclose(fp);
+        metadata_count = 0;
+        return -1;
+    }
+
+    // Read all metadata entries
+    if (fread(metadata_list, sizeof(FileMetadata), metadata_count, fp) != metadata_count)
+    {
+        if (global_logger)
+        {
+            log_message(global_logger, LOG_ERROR, "Failed to read metadata entries");
+        }
+        fclose(fp);
+        metadata_count = 0;
+        return -1;
+    }
+
+    fclose(fp);
+
+    if (global_logger)
+    {
+        log_message(global_logger, LOG_INFO, "Loaded %d metadata entries from disk", metadata_count);
+    }
+
+    return 0;
 }

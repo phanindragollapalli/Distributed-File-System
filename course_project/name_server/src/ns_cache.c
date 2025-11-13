@@ -1,3 +1,12 @@
+/*
+ * LRU CACHE - Person 1, Day 3-4
+ * Least Recently Used cache for recent file lookups to optimize Name Server performance
+ * Capacity: 16 entries (configurable via LRU_CAPACITY)
+ * Implementation: Doubly linked list for O(1) insertion/removal at both ends
+ * Cache stores filename to SS_ID mappings to avoid repeated Trie traversals
+ * Most recently accessed files move to front, least recently used evicted from tail
+ */
+
 #include "../include/ns_cache.h"
 #include <string.h>
 #include <stdlib.h>
@@ -5,6 +14,7 @@
 
 #define LRU_CAPACITY 16
 
+/* LRU node structure: stores key (filename) and value (SS_ID) with prev/next pointers */
 typedef struct LRUNode
 {
     char *key;
@@ -15,9 +25,13 @@ typedef struct LRUNode
 static LRUNode *lru_head = NULL, *lru_tail = NULL;
 static int lru_count = 0;
 
+/* Insert or update a cache entry
+ * New entries added to front (most recently used position)
+ * If cache exceeds capacity, removes least recently used entry from tail
+ */
 void lru_put(const char *key, int value)
 {
-    // For demo: just insert at front, remove from tail if full.
+    /* Create new node and insert at head (most recently used position) */
     LRUNode *node = (LRUNode *)calloc(1, sizeof(LRUNode));
     node->key = strdup(key);
     node->value = value;
@@ -28,6 +42,8 @@ void lru_put(const char *key, int value)
     if (!lru_tail)
         lru_tail = node;
     ++lru_count;
+
+    /* Evict least recently used entry if cache is full */
     if (lru_count > LRU_CAPACITY)
     {
         LRUNode *tmp = lru_tail;

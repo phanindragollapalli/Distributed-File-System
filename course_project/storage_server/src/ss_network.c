@@ -1,9 +1,18 @@
+/*
+ * STORAGE SERVER NETWORK MODULE
+ * Person 1, Days 5-6
+ *
+ * Handles network connections from Storage Server to Name Server.
+ * Uses TCP sockets for reliable communication.
+ */
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include "ss_network.h"
 
+// Connect to Name Server for registration and commands
 int ss_connect_to_ns(const char *ns_ip, int ns_port)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
