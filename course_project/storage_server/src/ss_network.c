@@ -1,7 +1,5 @@
 /*
  * STORAGE SERVER NETWORK MODULE
- * Person 1, Days 5-6
- *
  * Handles network connections from Storage Server to Name Server.
  * Uses TCP sockets for reliable communication.
  */

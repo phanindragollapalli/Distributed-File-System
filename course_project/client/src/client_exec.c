@@ -1,4 +1,4 @@
-/* EXEC COMMAND - Person 1, Day 12
+/* EXEC COMMAND
  * Execute files stored in the distributed file system on Name Server
  *
  * The EXEC command allows executing script files (e.g., shell scripts, Python scripts)

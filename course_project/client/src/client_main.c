@@ -1,6 +1,5 @@
 /*
  * CLIENT MAIN
- * Person 1, Days 1-7
  *
  * Main entry point for Client application. Connects to Name Server,
  * implements command loop for user interaction.

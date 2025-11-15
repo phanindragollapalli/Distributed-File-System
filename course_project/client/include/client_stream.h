@@ -1,15 +1,22 @@
 /*
  * STREAM COMMAND HEADER
- * Person 2, Days 11-12 - NOT Person 1's Responsibility
+ * Implements file streaming functionality - displays file content word-by-word
+ * with 0.1 second delay between words for a streaming effect.
  *
- * Implements audio streaming functionality.
- * This is Person 2's work.
+ * The client establishes direct connection with Storage Server and fetches
+ * content word-by-word. Handles SS disconnection gracefully.
  */
 
 #ifndef CLIENT_STREAM_H
 #define CLIENT_STREAM_H
 
-// Handle STREAM command (Person 2's responsibility)
+/* Handle STREAM command
+ * Connects to NS to get SS info, then streams file content from SS
+ * Parameters:
+ *   command  - Full command string (e.g., "STREAM document.txt")
+ *   username - Username for ACL permission check
+ * Returns: 0 on success, -1 on failure
+ */
 int handle_stream_command(const char *command, const char *username);
 
 #endif

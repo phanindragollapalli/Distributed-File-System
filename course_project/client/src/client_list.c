@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* LIST COMMAND - Person 1, Day 8-9
+/* LIST COMMAND
  * Lists all accessible files for the user based on ACL permissions
  * Process:
  * 1. Send LIST request to Name Server with username

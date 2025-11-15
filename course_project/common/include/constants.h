@@ -12,7 +12,7 @@
 #define MAX_STORAGE_SERVERS 50
 #define MAX_FILENAME_LEN 256
 #define MAX_USERNAME_LEN 64
-#define MAX_PATH_LEN 512
+#define MAX_PATH_LEN 1024
 
 // Timing constants
 #define STREAM_DELAY_MS 100

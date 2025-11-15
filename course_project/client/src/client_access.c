@@ -1,4 +1,4 @@
-/* ACCESS CONTROL COMMANDS - Person 1, Day 10-11
+/* ACCESS CONTROL COMMANDS
  * GRANT and REVOKE commands for managing file permissions
  *
  * GRANT <filename> <username> READ|WRITE

@@ -1,7 +1,5 @@
 /*
  * CLIENT NETWORK MODULE
- * Person 1, Days 1-2
- *
  * Handles TCP socket connections from Client to Name Server and Storage Servers.
  * Provides connection establishment and socket management.
  */

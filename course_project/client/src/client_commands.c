@@ -1,7 +1,5 @@
 /*
  * CLIENT COMMAND DISPATCHER
- * Person 1, Days 1-7
- *
  * Parses user commands and routes them to appropriate handlers.
  * Provides the main command processing infrastructure.
  */

@@ -1,7 +1,5 @@
 /*
  * STORAGE SERVER MAIN
- * Person 1, Days 5-7
- *
  * Main entry point for Storage Server. Initializes logger, persistence,
  * registers with Name Server, and starts command processing loop.
  * Also listens for direct client connections to serve file contents.
@@ -50,9 +48,9 @@ void *handle_ns_connection(void *arg)
     return NULL;
 }
 
-/* Thread handler for client file requests - Person 1, Days 5-7
+/* Thread handler for client file requests - Person 1, Days 5-7 + Person 2
  * Serves file contents directly to clients after NS routing
- * Handles READ requests from clients
+ * Handles READ and STREAM requests from clients
  */
 void *handle_client_request(void *arg)
 {
@@ -71,15 +69,24 @@ void *handle_client_request(void *arg)
 
     buffer[bytes_read] = '\0';
 
-    // Parse command: "READ <filename>"
+    // Parse command: "READ <filename>" or "STREAM <filename>"
     char cmd[64], filename[256];
-    if (sscanf(buffer, "%63s %255s", cmd, filename) == 2 && strcmp(cmd, "READ") == 0)
+    if (sscanf(buffer, "%63s %255s", cmd, filename) != 2)
+    {
+        const char *error = "ERROR: Invalid command format\n";
+        write(client_fd, error, strlen(error));
+        log_message(ss_logger, LOG_WARN, "Invalid client command: %s", buffer);
+        close(client_fd);
+        return NULL;
+    }
+
+    // Build full file path
+    char filepath[512];
+    snprintf(filepath, sizeof(filepath), "%s/%s", storage_dir, filename);
+
+    if (strcmp(cmd, "READ") == 0)
     {
         log_message(ss_logger, LOG_INFO, "Client READ request for file: %s", filename);
-
-        // Build full file path
-        char filepath[512];
-        snprintf(filepath, sizeof(filepath), "%s/%s", storage_dir, filename);
 
         // Open and send file contents
         FILE *f = fopen(filepath, "r");
@@ -108,11 +115,97 @@ void *handle_client_request(void *arg)
             log_message(ss_logger, LOG_WARN, "File not found: %s", filepath);
         }
     }
+    else if (strcmp(cmd, "STREAM") == 0)
+    {
+        log_message(ss_logger, LOG_INFO, "Client STREAM request for file: %s", filename);
+
+        // Open file for streaming
+        FILE *f = fopen(filepath, "r");
+        if (!f)
+        {
+            const char *error = "ERROR: File not found or inaccessible\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_WARN, "File not found: %s", filepath);
+            close(client_fd);
+            return NULL;
+        }
+
+        // Read entire file into memory for parsing
+        fseek(f, 0, SEEK_END);
+        long file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        char *content = malloc(file_size + 1);
+        if (!content)
+        {
+            fclose(f);
+            const char *error = "ERROR: Memory allocation failed\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_ERROR, "Memory allocation failed for streaming");
+            close(client_fd);
+            return NULL;
+        }
+
+        fread(content, 1, file_size, f);
+        content[file_size] = '\0';
+        fclose(f);
+
+        // Stream word by word with 0.1 second delay
+        char word[256];
+        int word_idx = 0;
+        int total_words = 0;
+
+        for (long i = 0; i <= file_size; i++)
+        {
+            char c = (i < file_size) ? content[i] : '\0';
+
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0')
+            {
+                if (word_idx > 0)
+                {
+                    word[word_idx] = '\0';
+
+                    // Send word followed by space
+                    if (write(client_fd, word, word_idx) < 0 ||
+                        write(client_fd, " ", 1) < 0)
+                    {
+                        log_message(ss_logger, LOG_WARN, "Client disconnected during streaming");
+                        free(content);
+                        close(client_fd);
+                        return NULL;
+                    }
+
+                    total_words++;
+                    word_idx = 0;
+
+                    // 0.1 second delay (100,000 microseconds)
+                    usleep(100000);
+                }
+
+                // Preserve newlines
+                if (c == '\n')
+                {
+                    write(client_fd, "\n", 1);
+                }
+            }
+            else
+            {
+                if (word_idx < sizeof(word) - 1)
+                {
+                    word[word_idx++] = c;
+                }
+            }
+        }
+
+        free(content);
+        log_message(ss_logger, LOG_INFO, "Streamed %d words from file '%s' to client",
+                    total_words, filename);
+    }
     else
     {
-        const char *error = "ERROR: Invalid command format. Use: READ <filename>\n";
+        const char *error = "ERROR: Unknown command. Use: READ or STREAM\n";
         write(client_fd, error, strlen(error));
-        log_message(ss_logger, LOG_WARN, "Invalid client command: %s", buffer);
+        log_message(ss_logger, LOG_WARN, "Unknown command: %s", cmd);
     }
 
     close(client_fd);

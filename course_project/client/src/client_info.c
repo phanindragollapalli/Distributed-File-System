@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <time.h>
 
-/* INFO COMMAND - Person 1, Day 8-9
+/* INFO COMMAND
  * Displays detailed file metadata including size, owner, permissions, timestamps
  * Process:
  * 1. Send INFO request to Name Server with filename and username

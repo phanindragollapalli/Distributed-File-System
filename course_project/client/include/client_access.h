@@ -1,7 +1,5 @@
 /*
  * ACCESS CONTROL (GRANT/REVOKE) HEADER
- * Person 1, Days 10-11 - NOT YET IMPLEMENTED (client side)
- *
  * Implements GRANT and REVOKE commands for ACL management.
  * Server-side implementation in ns_acl.c is complete.
  */

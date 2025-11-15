@@ -8,7 +8,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-/* VIEW COMMAND - Person 1, Day 8-9
+/* VIEW COMMAND
  * Displays the contents of a file to the user
  * Process:
  * 1. Send VIEW request to Name Server with filename and username

@@ -1,6 +1,5 @@
 /*
  * VIEW COMMAND HEADER
- * Person 1, Days 8-9 - NOT YET IMPLEMENTED
  *
  * Displays file contents to user. Contacts Name Server to locate file,
  * then connects to Storage Server to retrieve and display contents.

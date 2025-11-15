@@ -1,7 +1,5 @@
 /*
  * STORAGE SERVER REGISTRATION
- * Person 1, Days 5-6
- *
  * Handles registration of Storage Server with Name Server.
  * Sends server metadata and scans local directory to report available files.
  */
