@@ -1,12 +1,3 @@
-/*
- * ACCESS CONTROL LISTS HEADER
- * Person 1, Days 10-11
- *
- * Defines structures and functions for file access control.
- * Implements READ/WRITE permissions and GRANT/REVOKE operations.
- * Implementation is COMPLETE in ns_acl.c
- */
-
 #ifndef NS_ACL_H
 #define NS_ACL_H
 

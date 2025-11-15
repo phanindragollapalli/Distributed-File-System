@@ -1,11 +1,3 @@
-/*
- * TRIE DATA STRUCTURE HEADER
- * Person 1, Days 3-4
- *
- * Defines 256-ary Trie for efficient file path lookups.
- * Supports O(m) insertion and search operations.
- */
-
 #ifndef NS_STORAGE_H
 #define NS_STORAGE_H
 

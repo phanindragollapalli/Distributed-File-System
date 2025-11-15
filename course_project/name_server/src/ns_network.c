@@ -1,6 +1,6 @@
 /*
  * NAME SERVER NETWORK MODULE
- * Person 1, Days 3-4
+
  *
  * Handles TCP socket initialization and connection acceptance for Name Server.
  * Uses POSIX sockets API for network communication.

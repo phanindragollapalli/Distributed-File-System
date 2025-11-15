@@ -1,6 +1,5 @@
 /*
  * FILE METADATA MANAGEMENT
- * Person 1, Days 5-6
  *
  * Manages file metadata including owner, size, permissions, timestamps.
  * Provides operations to add, retrieve, update, and delete file metadata.

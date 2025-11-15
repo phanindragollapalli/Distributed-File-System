@@ -1,6 +1,5 @@
 /*
  * FILE REQUEST ROUTING
- * Person 1, Days 5-6
  *
  * Routes file requests to appropriate Storage Servers using Trie lookups.
  * Implements load balancing and failover for multiple Storage Servers.

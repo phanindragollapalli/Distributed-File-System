@@ -1,11 +1,3 @@
-/*
- * EXEC COMMAND HEADER
- * Person 1, Day 12
- *
- * Executes file contents as shell commands on Name Server.
- * File is retrieved from Storage Server, executed, and output returned to client.
- */
-
 #ifndef NS_EXEC_H
 #define NS_EXEC_H
 

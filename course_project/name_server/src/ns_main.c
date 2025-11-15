@@ -1,5 +1,5 @@
 /*
- * NAME SERVER MAIN - Person 1, Day 3-4
+ * NAME SERVER MAIN
  * Central coordinator of the distributed file system (similar to HDFS NameNode)
  * Responsibilities:
  * - Accept connections from Storage Servers and Clients on separate ports
@@ -32,7 +32,7 @@
 Logger *global_logger = NULL;
 TrieNode *global_file_trie = NULL;
 
-/* ========== DAY 13: AUTO-SAVE FUNCTIONALITY ========== */
+/* ========== AUTO-SAVE FUNCTIONALITY ========== */
 
 static pthread_t auto_save_thread;
 static int auto_save_running = 0;

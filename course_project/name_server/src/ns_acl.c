@@ -1,4 +1,4 @@
-/* ACCESS CONTROL LISTS (ACL) - Person 1, Day 10-11
+/* ACCESS CONTROL LISTS (ACL)
  * Manages file permissions: owner, read access, write access
  * Each file has an ACL with owner and list of users with specific rights
  * GRANT command adds permissions (READ or WRITE) to users

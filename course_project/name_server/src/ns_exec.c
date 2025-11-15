@@ -1,4 +1,4 @@
-/* EXEC COMMAND - Person 1, Day 12
+/* EXEC COMMAND
  * Execute files stored in distributed file system on Name Server
  *
  * Flow:

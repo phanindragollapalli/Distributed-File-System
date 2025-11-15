@@ -1,5 +1,5 @@
 /*
- * TRIE DATA STRUCTURE - Person 1, Day 3-4
+ * TRIE DATA STRUCTURE
  * Efficient file path lookup data structure providing O(m) search time where m is path length
  * Uses 256-ary tree (one child per ASCII character) for optimal character-by-character traversal
  * Each file path is stored as a sequence of characters leading to a leaf node containing SS_ID
@@ -67,7 +67,7 @@ int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
     return 0;
 }
 
-/* ========== DAY 13: TRIE PERSISTENCE FUNCTIONS ========== */
+/* ========== TRIE PERSISTENCE FUNCTIONS ========== */
 
 #define TRIE_FILE "name_server/data/trie.dat"
 

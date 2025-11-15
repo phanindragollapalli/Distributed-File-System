@@ -1,5 +1,5 @@
 /*
- * LRU CACHE - Person 1, Day 3-4
+ * LRU CACHE
  * Least Recently Used cache for recent file lookups to optimize Name Server performance
  * Capacity: 16 entries (configurable via LRU_CAPACITY)
  * Implementation: Doubly linked list for O(1) insertion/removal at both ends
