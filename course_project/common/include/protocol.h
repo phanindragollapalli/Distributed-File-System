@@ -1,6 +1,8 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <stddef.h>
+
 #define NS_PORT 9000
 #define SS_PORT 9001
 #define CLIENT_PORT 9002
@@ -14,5 +16,58 @@ typedef enum
     MSG_ACK,
     MSG_ERROR
 } MessageType;
+
+/* ========== COMMAND PARSING FUNCTIONS ========== */
+
+/* Parse command components */
+int parse_command_type(const char *command, char *cmd_type, size_t max_len);
+int parse_filename(const char *command, char *filename, size_t max_len);
+int parse_username(const char *command, char *username, size_t max_len);
+
+/* ========== MESSAGE FORMATTING FUNCTIONS ========== */
+
+/* Client command formatting */
+int format_view_command(char *buffer, size_t buffer_size,
+                        const char *filename, const char *username);
+int format_read_command(char *buffer, size_t buffer_size, const char *filename);
+int format_create_command(char *buffer, size_t buffer_size, const char *filename);
+int format_delete_command(char *buffer, size_t buffer_size, const char *filename);
+int format_info_command(char *buffer, size_t buffer_size,
+                        const char *filename, const char *username);
+int format_list_command(char *buffer, size_t buffer_size, const char *username);
+int format_exec_command(char *buffer, size_t buffer_size,
+                        const char *filename, const char *username);
+int format_grant_command(char *buffer, size_t buffer_size,
+                         const char *filename, const char *username,
+                         const char *permission);
+int format_revoke_command(char *buffer, size_t buffer_size,
+                          const char *filename, const char *username);
+int format_stream_command(char *buffer, size_t buffer_size,
+                          const char *filename, const char *username);
+
+/* NS to SS command formatting */
+int format_get_file_command(char *buffer, size_t buffer_size, const char *filename);
+
+/* Response formatting */
+int format_ss_info_response(char *buffer, size_t buffer_size,
+                            const char *ip, int port);
+int format_ack_response(char *buffer, size_t buffer_size, const char *message);
+int format_error_response(char *buffer, size_t buffer_size, const char *message);
+
+/* ========== PROTOCOL VALIDATION FUNCTIONS ========== */
+
+/* Validation functions */
+int is_valid_command(const char *command);
+int is_error_response(const char *response);
+int is_ack_response(const char *response);
+
+/* ========== UTILITY FUNCTIONS ========== */
+
+/* String utilities */
+char *trim_whitespace(char *str);
+int extract_error_message(const char *response, char *error_msg, size_t max_len);
+
+/* Type conversion */
+const char *message_type_to_string(MessageType type);
 
 #endif

@@ -111,7 +111,7 @@ void log_request(Logger *logger, const char *username, const char *ip, int port,
 /* Log responses with error code and details, automatically choosing log level based on success/failure */
 void log_response(Logger *logger, const char *username, ErrorCode code, const char *details)
 {
-    LogLevel level = (code == ERR_SUCCESS) ? LOG_INFO : LOG_ERROR;
+    LogLevel level = (code == SUCCESS) ? LOG_INFO : LOG_ERROR;
     log_message(logger, level, "RESPONSE to %s - %s: %s",
                 username ? username : "unknown", error_code_to_string(code), details);
 }

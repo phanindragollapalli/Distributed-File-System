@@ -565,7 +565,7 @@ void *handle_storage_server(void *arg)
     else
     {
         log_message(global_logger, LOG_ERROR, "Invalid registration message");
-        send_error_response(conn_fd, ERR_INVALID_REQUEST);
+        send_error_response(conn_fd, ERR_INVALID_FORMAT);
     }
 
     close(conn_fd);

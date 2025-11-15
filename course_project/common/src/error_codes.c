@@ -1,9 +1,3 @@
-/*
- * ERROR CODES MODULE - Person 1, Day 1-2 and Day 7
- * Comprehensive error handling system used across Name Server, Storage Server, and Client
- * Defines 18 error codes covering all failure scenarios in the distributed file system
- */
-
 #include "../include/error_codes.h"
 #include <string.h>
 #include <stdio.h>
@@ -14,42 +8,78 @@ const char *error_code_to_string(ErrorCode code)
 {
     switch (code)
     {
-    case ERR_SUCCESS:
+    // Success codes
+    case SUCCESS:
         return "SUCCESS";
-    case ERR_UNAUTHORIZED:
-        return "UNAUTHORIZED";
+    case ACK_SUCCESS:
+        return "ACK_SUCCESS";
+
+    // General error codes
+    case ERR_GENERAL:
+        return "GENERAL_ERROR";
+    case ERR_INVALID_ARGS:
+        return "INVALID_ARGUMENTS";
+    case ERR_MEMORY:
+        return "MEMORY_ERROR";
+    case ERR_NULL_POINTER:
+        return "NULL_POINTER";
+
+    // Network error codes
+    case ERR_SOCKET_CREATE:
+        return "SOCKET_CREATE_FAILED";
+    case ERR_SOCKET_BIND:
+        return "SOCKET_BIND_FAILED";
+    case ERR_SOCKET_LISTEN:
+        return "SOCKET_LISTEN_FAILED";
+    case ERR_SOCKET_CONNECT:
+        return "SOCKET_CONNECT_FAILED";
+    case ERR_SOCKET_ACCEPT:
+        return "SOCKET_ACCEPT_FAILED";
+    case ERR_SEND_FAILED:
+        return "SEND_FAILED";
+    case ERR_RECV_FAILED:
+        return "RECV_FAILED";
+    case ERR_CONNECTION_CLOSED:
+        return "CONNECTION_CLOSED";
+
+    // File operation error codes
     case ERR_FILE_NOT_FOUND:
         return "FILE_NOT_FOUND";
-    case ERR_FILE_LOCKED:
-        return "FILE_LOCKED";
-    case ERR_PERMISSION_DENIED:
-        return "PERMISSION_DENIED";
-    case ERR_INVALID_OPERATION:
-        return "INVALID_OPERATION";
-    case ERR_NETWORK_FAILURE:
-        return "NETWORK_FAILURE";
-    case ERR_SS_UNAVAILABLE:
-        return "STORAGE_SERVER_UNAVAILABLE";
-    case ERR_NS_UNAVAILABLE:
-        return "NAME_SERVER_UNAVAILABLE";
     case ERR_FILE_EXISTS:
         return "FILE_ALREADY_EXISTS";
-    case ERR_INVALID_PATH:
-        return "INVALID_PATH";
-    case ERR_DISK_FULL:
-        return "DISK_FULL";
-    case ERR_TIMEOUT:
-        return "TIMEOUT";
-    case ERR_INVALID_REQUEST:
-        return "INVALID_REQUEST";
-    case ERR_INTERNAL_ERROR:
-        return "INTERNAL_ERROR";
-    case ERR_ACL_VIOLATION:
-        return "ACCESS_CONTROL_VIOLATION";
-    case ERR_MAX_CLIENTS:
-        return "MAX_CLIENTS_REACHED";
-    case ERR_REGISTRATION_FAILED:
-        return "REGISTRATION_FAILED";
+    case ERR_FILE_OPEN:
+        return "FILE_OPEN_FAILED";
+    case ERR_FILE_READ:
+        return "FILE_READ_FAILED";
+    case ERR_FILE_WRITE:
+        return "FILE_WRITE_FAILED";
+    case ERR_FILE_DELETE:
+        return "FILE_DELETE_FAILED";
+    case ERR_FILE_LOCKED:
+        return "FILE_LOCKED";
+    case ERR_INVALID_INDEX:
+        return "INVALID_INDEX";
+    case ERR_SENTENCE_OUT_OF_RANGE:
+        return "SENTENCE_OUT_OF_RANGE";
+    case ERR_WORD_OUT_OF_RANGE:
+        return "WORD_OUT_OF_RANGE";
+
+    // Access control error codes
+    case ERR_UNAUTHORIZED:
+        return "UNAUTHORIZED";
+    case ERR_NO_READ_ACCESS:
+        return "NO_READ_ACCESS";
+    case ERR_NO_WRITE_ACCESS:
+        return "NO_WRITE_ACCESS";
+    case ERR_PERMISSION_DENIED:
+        return "PERMISSION_DENIED";
+
+    // Parse error codes
+    case ERR_PARSE_FAILED:
+        return "PARSE_FAILED";
+    case ERR_INVALID_FORMAT:
+        return "INVALID_FORMAT";
+
     default:
         return "UNKNOWN_ERROR";
     }
@@ -71,5 +101,5 @@ ErrorCode parse_error_response(const char *msg)
     {
         return (ErrorCode)code;
     }
-    return ERR_INTERNAL_ERROR;
+    return ERR_GENERAL;
 }
