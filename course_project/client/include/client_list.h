@@ -1,42 +1,37 @@
 /*
-LIST COMMAND HEADER
- * Lists all files accessible to the user based on ACL permissions.
+ * LIST COMMAND HEADER
+ * Lists all users registered in the system.
  *
  * Functionality:
- * - Queries Name Server for files the user can access
- * - Filters files based on ACL (READ or WRITE permissions)
- * - Displays formatted table with filename and permissions
- * - Shows total count of accessible files
+ * - Queries Name Server for all registered users
+ * - Displays formatted list of usernames
+ * - Shows total count of registered users
  *
  * Flow:
- * 1. Client sends LIST request with username to Name Server
- * 2. NS queries ACL system to find all files user has access to
- * 3. NS returns FILE_LIST with filename and permission pairs
- * 4. Client parses and displays formatted table
- * 5. Shows count of accessible files
+ * 1. Client sends LIST request to Name Server
+ * 2. NS returns USER_LIST with all usernames
+ * 3. Client parses and displays formatted list
+ * 4. Shows count of total users
  *
  * Output Format:
- * Filename                                 Permissions
- * ---------------------------------------- ---------------
- * example.txt                              READ,WRITE
- * data.csv                                 READ
+ * === Registered Users ===
+ * --> user1
+ * --> user2
+ * --> kaevi
  *
- * The LIST command helps users discover which files they can
- * access based on their granted permissions in the ACL system.
+ * Total users: 3
  */
 
 #ifndef CLIENT_LIST_H
 #define CLIENT_LIST_H
 
 /* Handle LIST command
- * Retrieves and displays all files accessible to the user
+ * Retrieves and displays all users in the system
  *
  * Parameters:
- *   username - Username for ACL filtering
+ *   username - Current username (not used for LIST, but kept for consistency)
  *
  * Returns: 0 on success, -1 on failure
- *
- * Note: Only files where user has READ or WRITE permission are shown
  */
 int handle_list_command(const char *username);
 

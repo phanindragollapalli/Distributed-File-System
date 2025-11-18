@@ -9,28 +9,49 @@
 #include <arpa/inet.h>
 
 /* VIEW COMMAND
- * Displays the contents of a file to the user
+ * Lists files available to the user
  * Process:
- * 1. Send VIEW request to Name Server with filename and username
- * 2. NS checks ACL permissions (user must have READ access)
- * 3. NS returns Storage Server IP and port
- * 4. Client connects to Storage Server
- * 5. Request file contents from SS
- * 6. Display contents to user
+ * 1. Send VIEW request to Name Server with flags and username
+ * 2. NS returns list of files based on flags:
+ *    - No flags: files user has access to
+ *    - -a: all files on system
+ *    - -l: files with details (word count, char count, last access, owner)
+ *    - -al/-la: all files with details
+ * 3. Display formatted list to user
  */
 
 int handle_view_command(const char *command, const char *username)
 {
-    // Parse command: "VIEW <filename>"
-    char filename[256];
-    if (sscanf(command, "VIEW %255s", filename) != 1)
+    // Parse command: "VIEW" or "VIEW -a" or "VIEW -l" or "VIEW -al"
+    char flags[16] = "";
+    sscanf(command, "VIEW %15s", flags);
+
+    // Validate flags if present
+    if (strlen(flags) > 0 && flags[0] == '-')
     {
+        int valid = 1;
+        for (int i = 1; flags[i] != '\0'; i++)
+        {
+            if (flags[i] != 'a' && flags[i] != 'l')
+            {
+                valid = 0;
+                break;
+            }
+        }
+        if (!valid)
+        {
+            printf("Error: Invalid VIEW flags\n");
+            printf("Usage: VIEW [-a] [-l] [-al]\n");
+            return -1;
+        }
+    }
+    else if (strlen(flags) > 0 && flags[0] != '-')
+    {
+        // If there's a non-flag argument, it's an error
         printf("Error: Invalid VIEW command format\n");
-        printf("Usage: VIEW <filename>\n");
+        printf("Usage: VIEW [-a] [-l] [-al]\n");
         return -1;
     }
-
-    printf("Viewing file: %s\n", filename);
 
     // Connect to Name Server
     int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
@@ -40,9 +61,16 @@ int handle_view_command(const char *command, const char *username)
         return -1;
     }
 
-    // Send VIEW request with username for ACL check
+    // Send VIEW request with flags and username
     char request[512];
-    snprintf(request, sizeof(request), "VIEW %s %s\n", filename, username);
+    if (strlen(flags) > 0)
+    {
+        snprintf(request, sizeof(request), "VIEW %s %s\n", flags, username);
+    }
+    else
+    {
+        snprintf(request, sizeof(request), "VIEW %s\n", username);
+    }
 
     if (send_to_ns(ns_fd, request) < 0)
     {
@@ -51,94 +79,124 @@ int handle_view_command(const char *command, const char *username)
         return -1;
     }
 
-    // Receive response from NS
-    char response[1024];
-    int bytes_received = recv_from_ns(ns_fd, response, sizeof(response));
+    // Receive response from NS (may arrive in multiple chunks)
+    char response[16384];
+    int total_received = 0;
+    while (total_received < (int)sizeof(response) - 1)
+    {
+        int n = recv(ns_fd,
+                     response + total_received,
+                     sizeof(response) - 1 - total_received,
+                     0);
+        if (n <= 0)
+        {
+            break;
+        }
+        total_received += n;
+        if (n == 0)
+        {
+            break;
+        }
+    }
 
-    if (bytes_received <= 0)
+    if (total_received <= 0)
     {
         printf("Error: No response from Name Server\n");
         close(ns_fd);
         return -1;
     }
 
-    // Parse response: "SS_INFO <ip> <port>" or "ERROR <message>"
+    response[total_received] = '\0';
+
+    // Check for error response
     if (strncmp(response, "ERROR", 5) == 0)
     {
-        printf("%s\n", response + 7); // Print error message
+        printf("%s\n", response + 7);
         close(ns_fd);
         return -1;
     }
 
-    char ss_ip[32];
-    int ss_port;
-    if (sscanf(response, "SS_INFO %31s %d", ss_ip, &ss_port) != 2)
+    if (strncmp(response, "FILE_LIST", 9) == 0)
     {
-        printf("Error: Invalid response from Name Server\n");
-        close(ns_fd);
-        return -1;
+        printf("\n=== Files You Can Access ===\n");
+        printf("%-40s %-15s\n", "Filename", "Permissions");
+        printf("%-40s %-15s\n", "----------------------------------------", "---------------");
+
+        char *data = response + 9;
+        if (*data == '\n')
+            data++;
+
+        int shown = 0;
+        char *line = strtok(data, "\n");
+        while (line)
+        {
+            char filename[256] = {0};
+            char perms[64] = {0};
+            if (sscanf(line, "%255s %63[^\n]", filename, perms) >= 1)
+            {
+                printf("%-40s %-15s\n", filename, perms[0] ? perms : "-");
+                shown++;
+            }
+            line = strtok(NULL, "\n");
+        }
+
+        if (shown == 0)
+        {
+            printf("(No files match the current filters)\n");
+        }
+    }
+    else if (strncmp(response, "FILE_DETAILS", 12) == 0)
+    {
+        printf("\n=== File Details ===\n");
+        printf("%-25s %-12s %-10s %-20s %-12s\n",
+               "Filename", "Owner", "Chars", "Last Access", "Permissions");
+        printf("%-25s %-12s %-10s %-20s %-12s\n",
+               "-------------------------", "------------", "----------",
+               "--------------------", "------------");
+
+        char *data = response + 12;
+        if (*data == '\n')
+            data++;
+
+        int shown = 0;
+        char *line = strtok(data, "\n");
+        while (line)
+        {
+            char filename[256] = {0};
+            char owner[64] = {0};
+            char last_access[64] = {0};
+            char perms[64] = {0};
+            size_t char_count = 0;
+
+            if (sscanf(line, "%255[^|]|%63[^|]|%zu|%63[^|]|%63[^\n]",
+                       filename, owner, &char_count, last_access, perms) == 5)
+            {
+                printf("%-25s %-12s %-10zu %-20s %-12s\n",
+                       filename,
+                       owner[0] ? owner : "unknown",
+                       char_count,
+                       last_access[0] ? last_access : "N/A",
+                       perms[0] ? perms : "-");
+                shown++;
+            }
+            line = strtok(NULL, "\n");
+        }
+
+        if (shown == 0)
+        {
+            printf("(No files to display)\n");
+        }
+    }
+    else if (strncmp(response, "NO_FILES", 8) == 0)
+    {
+        printf("No files found for the requested view.\n");
+    }
+    else
+    {
+        printf("%s", response);
     }
 
     close(ns_fd);
-
-    // Connect to Storage Server
-    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (ss_fd < 0)
-    {
-        perror("Error creating socket for Storage Server");
-        return -1;
-    }
-
-    struct sockaddr_in ss_addr;
-    ss_addr.sin_family = AF_INET;
-    ss_addr.sin_port = htons(ss_port);
-    inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr);
-
-    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
-    {
-        perror("Error connecting to Storage Server");
-        close(ss_fd);
-        return -1;
-    }
-
-    // Request file contents from Storage Server
-    char ss_request[512];
-    snprintf(ss_request, sizeof(ss_request), "READ %s\n", filename);
-    send(ss_fd, ss_request, strlen(ss_request), 0);
-
-    // Receive and display file contents
-    printf("\n--- File Contents: %s ---\n", filename);
-
-    char buffer[4096];
-    int total_bytes = 0;
-    while (1)
-    {
-        int n = recv(ss_fd, buffer, sizeof(buffer) - 1, 0);
-        if (n <= 0)
-            break;
-
-        buffer[n] = '\0';
-
-        // Check for error response
-        if (total_bytes == 0 && strncmp(buffer, "ERROR", 5) == 0)
-        {
-            printf("%s\n", buffer + 7);
-            close(ss_fd);
-            return -1;
-        }
-
-        printf("%s", buffer);
-        total_bytes += n;
-
-        // If we received less than buffer size, we're done
-        if (n < sizeof(buffer) - 1)
-            break;
-    }
-
-    printf("\n--- End of File ---\n");
-    printf("Total bytes read: %d\n", total_bytes);
-
-    close(ss_fd);
     return 0;
 }
 

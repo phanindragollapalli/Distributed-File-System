@@ -1,8 +1,8 @@
 /*
  * VIEW COMMAND HEADER
  *
- * Displays file contents to user. Contacts Name Server to locate file,
- * then connects to Storage Server to retrieve and display contents.
+ * Lists files available to the user based on access permissions.
+ * Supports flags: -a (all files), -l (detailed info), -al (both)
  */
 
 #ifndef CLIENT_VIEW_H

@@ -72,6 +72,84 @@ static ssize_t read_line_from_socket(int fd, char *buffer, size_t max_len)
     return (ssize_t)pos;
 }
 
+static int start_client_listener(int base_port, int max_attempts, int *out_fd, int *actual_port)
+{
+    if (!out_fd || !actual_port)
+    {
+        return -1;
+    }
+
+    for (int attempt = 0; attempt < max_attempts; attempt++)
+    {
+        int trial_port = base_port + attempt;
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+        {
+            log_message(ss_logger, LOG_ERROR, "Failed to create client server socket: %s",
+                        strerror(errno));
+            return -1;
+        }
+
+        int opt = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+#ifdef SO_REUSEPORT
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
+
+        struct sockaddr_in addr = {0};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(trial_port);
+
+        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0)
+        {
+            if (listen(fd, 10) < 0)
+            {
+                log_message(ss_logger, LOG_ERROR, "Failed to listen on client port %d: %s",
+                            trial_port, strerror(errno));
+                close(fd);
+                return -1;
+            }
+
+            *out_fd = fd;
+            *actual_port = trial_port;
+
+            if (attempt > 0)
+            {
+                log_message(ss_logger, LOG_WARN,
+                            "Client port %d was busy; switched to available port %d",
+                            base_port, trial_port);
+            }
+            else
+            {
+                log_message(ss_logger, LOG_INFO, "Bound client listener to port %d", trial_port);
+            }
+
+            return 0;
+        }
+
+        int err = errno;
+        close(fd);
+
+        if (err == EADDRINUSE)
+        {
+            log_message(ss_logger, LOG_WARN,
+                        "Client port %d already in use, trying next...", trial_port);
+            continue;
+        }
+
+        log_message(ss_logger, LOG_ERROR,
+                    "Failed to bind client port %d: %s", trial_port, strerror(err));
+        return -1;
+    }
+
+    log_message(ss_logger, LOG_ERROR,
+                "Unable to find available client port in range [%d, %d]",
+                base_port, base_port + max_attempts - 1);
+    return -1;
+}
+
 static void handle_write_session(int client_fd, const char *filename, int sentence_index, const char *username)
 {
     if (!file_ops_ctx)
@@ -504,8 +582,18 @@ int main()
 
     log_connection(ss_logger, "CONNECTED", "127.0.0.1", NS_PORT);
 
-    // Register with NS (using SS_BASE_PORT for client connections)
-    int client_port = SS_BASE_PORT + 100; // Different port for direct client connections
+    // Prepare client listener before registration so advertised port is reachable
+    int client_server_fd = -1;
+    int client_port = SS_BASE_PORT + 100; // Default client port
+    if (start_client_listener(client_port, 32, &client_server_fd, &client_port) != 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Unable to create client listener socket");
+        close(ns_fd);
+        logger_close(ss_logger);
+        return 1;
+    }
+
+    // Register with NS using the actual listener port
     if (register_with_ns(ns_fd, "127.0.0.1", SS_BASE_PORT, client_port))
     {
         log_message(ss_logger, LOG_INFO, "Successfully registered with Name Server (client_port=%d)",
@@ -543,42 +631,6 @@ int main()
     pthread_detach(ns_thread);
 
     log_message(ss_logger, LOG_INFO, "NS handler thread started");
-
-    // Create server socket for direct client connections
-    int client_server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_server_fd < 0)
-    {
-        log_message(ss_logger, LOG_ERROR, "Failed to create client server socket");
-        logger_close(ss_logger);
-        return 1;
-    }
-
-    // Allow port reuse
-    int opt = 1;
-    setsockopt(client_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    // Bind to client port
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(client_port);
-
-    if (bind(client_server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-    {
-        log_message(ss_logger, LOG_ERROR, "Failed to bind client server socket to port %d", client_port);
-        close(client_server_fd);
-        logger_close(ss_logger);
-        return 1;
-    }
-
-    // Listen for client connections
-    if (listen(client_server_fd, 10) < 0)
-    {
-        log_message(ss_logger, LOG_ERROR, "Failed to listen on client server socket");
-        close(client_server_fd);
-        logger_close(ss_logger);
-        return 1;
-    }
 
     log_message(ss_logger, LOG_INFO, "Storage Server ready on port %d (clients), handling requests",
                 client_port);

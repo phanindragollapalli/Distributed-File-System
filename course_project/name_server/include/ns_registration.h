@@ -34,4 +34,10 @@ ClientInfo *get_client_by_id(int client_id);
 // Get storage server count
 int get_ss_count();
 
+// Get client count
+int get_client_count();
+
+// List all registered clients (returns count)
+int list_registered_users(char users[][32], int max_users);
+
 #endif

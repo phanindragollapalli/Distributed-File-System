@@ -147,14 +147,18 @@ int execute_command(const char *command, const char *username)
     {
         printf("Unknown command: %s\n", cmd);
         printf("\nAvailable commands:\n");
-        printf("  VIEW <filename>              - Display file contents\n");
-        printf("  LIST                         - List accessible files\n");
+        printf("  VIEW [-a] [-l] [-al]         - List files\n");
+        printf("  LIST                         - List all users\n");
+        printf("  READ <filename>              - Display file contents\n");
         printf("  INFO <filename>              - Show file metadata\n");
         printf("  GRANT <file> <user> READ|WRITE  - Grant permissions\n");
         printf("  REVOKE <file> <user> READ|WRITE - Revoke permissions\n");
         printf("  EXEC <filename>              - Execute script file\n");
         printf("  CREATE <filename>            - Create new file\n");
         printf("  DELETE <filename>            - Delete file\n");
+        printf("  WRITE <file> <sentence_idx>  - Write to file\n");
+        printf("  UNDO <filename>              - Undo last change\n");
+        printf("  STREAM <filename>            - Stream file contents\n");
         printf("  EXIT                         - Quit client\n");
         return -1;
     }

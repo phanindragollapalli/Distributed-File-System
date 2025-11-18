@@ -32,6 +32,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <errno.h>
+#include <time.h>
 
 Logger *global_logger = NULL;
 TrieNode *global_file_trie = NULL;
@@ -241,52 +242,136 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
     send_ss_info_to_client(client_fd, ss_info);
 }
 
-/* Handle LIST command - Person 1, Day 8-9
- * Client requests list of all accessible files
- * Process: Iterate metadata → Check ACL for each → Return file list with permissions
+/* Handle file listing (VIEW) command
+ * Supports combinations of flags: -a (all files) and -l (detailed view)
  */
-void handle_list_request(int client_fd, const char *username)
+void handle_list_request(int client_fd, const char *username, int include_all, int show_details)
 {
-    log_message(global_logger, LOG_INFO, "LIST request from user='%s'", username);
+    if (!username || strlen(username) == 0)
+    {
+        send_error_to_client(client_fd, "Username required for VIEW command");
+        return;
+    }
 
-    char response[4096] = "FILE_LIST\n";
-    int accessible_count = 0;
+    log_message(global_logger, LOG_INFO,
+                "LIST request from user='%s' (all=%d, details=%d)",
+                username, include_all, show_details);
 
-    // Get all files from metadata
     char all_files[512][256];
     int total_files = list_all_files(all_files, 512);
 
-    // Check ACL for each file
-    for (int i = 0; i < total_files; i++)
+    if (total_files <= 0)
     {
-        char perms[32] = "";
-        int has_read = acl_can_read(all_files[i], username);
-        int has_write = acl_can_write(all_files[i], username);
+        const char *msg = "NO_FILES\n";
+        write(client_fd, msg, strlen(msg));
+        return;
+    }
 
-        if (has_read || has_write)
+    char entries[512][512];
+    int entry_count = 0;
+
+    for (int i = 0; i < total_files && entry_count < 512; i++)
+    {
+        const char *filename = all_files[i];
+        int has_read = acl_can_read(filename, username);
+        int has_write = acl_can_write(filename, username);
+
+        if (!include_all && !has_read && !has_write)
         {
-            if (has_read && has_write)
-                strcpy(perms, "READ,WRITE");
-            else if (has_read)
-                strcpy(perms, "READ");
-            else if (has_write)
-                strcpy(perms, "WRITE");
-
-            char line[300];
-            snprintf(line, sizeof(line), "%s %s\n", all_files[i], perms);
-            strcat(response, line);
-            accessible_count++;
+            continue;
         }
+
+        char perms[32];
+        if (has_read && has_write)
+            strcpy(perms, "READ,WRITE");
+        else if (has_write)
+            strcpy(perms, "WRITE");
+        else if (has_read)
+            strcpy(perms, "READ");
+        else
+            strcpy(perms, "NO_ACCESS");
+
+        if (show_details)
+        {
+            FileMetadata *meta = get_file_metadata(filename);
+            char owner[32] = "unknown";
+            char last_access[64] = "N/A";
+            size_t char_count = 0;
+
+            if (meta)
+            {
+                if (meta->owner[0] != '\0')
+                {
+                    strncpy(owner, meta->owner, sizeof(owner) - 1);
+                    owner[sizeof(owner) - 1] = '\0';
+                }
+                char_count = meta->size;
+
+                if (meta->last_accessed > 0)
+                {
+                    struct tm tm_info;
+                    localtime_r(&meta->last_accessed, &tm_info);
+                    strftime(last_access, sizeof(last_access), "%Y-%m-%d %H:%M:%S", &tm_info);
+                }
+            }
+
+            snprintf(entries[entry_count], sizeof(entries[entry_count]),
+                     "%s|%s|%zu|%s|%s\n",
+                     filename, owner, char_count, last_access, perms);
+        }
+        else
+        {
+            snprintf(entries[entry_count], sizeof(entries[entry_count]),
+                     "%s %s\n", filename, perms);
+        }
+
+        entry_count++;
     }
 
-    if (accessible_count == 0)
+    if (entry_count == 0)
     {
-        strcpy(response, "NO_FILES\n");
+        const char *msg = include_all ? "NO_FILES\n" : "NO_FILES\n";
+        write(client_fd, msg, strlen(msg));
+        return;
     }
 
-    write(client_fd, response, strlen(response));
-    log_message(global_logger, LOG_INFO, "LIST: Sent %d accessible files to user='%s'",
-                accessible_count, username);
+    const char *header = show_details ? "FILE_DETAILS\n" : "FILE_LIST\n";
+    write(client_fd, header, strlen(header));
+
+    for (int i = 0; i < entry_count; i++)
+    {
+        write(client_fd, entries[i], strlen(entries[i]));
+    }
+
+    log_message(global_logger, LOG_INFO,
+                "LIST: Sent %d files to user='%s' (all=%d, details=%d)",
+                entry_count, username, include_all, show_details);
+}
+
+/* Handle LIST (users) command */
+void handle_user_list_request(int client_fd)
+{
+    char users[128][32];
+    int user_count = list_registered_users(users, 128);
+
+    if (user_count <= 0)
+    {
+        const char *msg = "NO_USERS\n";
+        write(client_fd, msg, strlen(msg));
+        return;
+    }
+
+    const char *header = "USER_LIST\n";
+    write(client_fd, header, strlen(header));
+
+    for (int i = 0; i < user_count; i++)
+    {
+        char line[64];
+        snprintf(line, sizeof(line), "%s\n", users[i]);
+        write(client_fd, line, strlen(line));
+    }
+
+    log_message(global_logger, LOG_INFO, "LIST: Sent %d registered users", user_count);
 }
 
 /* Handle INFO command - Person 1, Day 8-9
@@ -666,15 +751,76 @@ void *handle_client(void *arg)
         const char *ack = "ACK CLIENT_REGISTERED\n";
         write(conn_fd, ack, strlen(ack));
     }
-    // Handle VIEW command - arg1=filename, arg2=username
-    else if (strcmp(cmd, "VIEW") == 0 && parsed >= 3)
+    // Handle VIEW command
+    else if (strcmp(cmd, "VIEW") == 0)
     {
-        handle_view_request(conn_fd, arg1, arg2);
+        if (parsed >= 3 && arg1[0] != '-')
+        {
+            // Legacy behavior: VIEW <filename> <username>
+            handle_view_request(conn_fd, arg1, arg2);
+        }
+        else
+        {
+            const char *username = NULL;
+            const char *flag_arg = "";
+
+            if (parsed == 2)
+            {
+                username = arg1;
+            }
+            else if (parsed >= 3 && arg1[0] == '-')
+            {
+                flag_arg = arg1;
+                username = arg2;
+            }
+            else
+            {
+                send_error_to_client(conn_fd, "Invalid VIEW command format");
+                close(conn_fd);
+                return NULL;
+            }
+
+            int include_all = 0;
+            int show_details = 0;
+
+            if (flag_arg && strlen(flag_arg) > 0)
+            {
+                if (flag_arg[0] != '-')
+                {
+                    send_error_to_client(conn_fd, "Invalid VIEW flags");
+                    close(conn_fd);
+                    return NULL;
+                }
+
+                for (size_t i = 1; flag_arg[i] != '\0'; i++)
+                {
+                    if (flag_arg[i] == 'a' || flag_arg[i] == 'A')
+                        include_all = 1;
+                    else if (flag_arg[i] == 'l' || flag_arg[i] == 'L')
+                        show_details = 1;
+                    else
+                    {
+                        send_error_to_client(conn_fd, "Unsupported VIEW flag");
+                        close(conn_fd);
+                        return NULL;
+                    }
+                }
+            }
+
+            handle_list_request(conn_fd, username, include_all, show_details);
+        }
     }
-    // Handle LIST command - arg1=username
-    else if (strcmp(cmd, "LIST") == 0 && parsed >= 2)
+    // Handle LIST command - no args for users, legacy LIST <username> for files
+    else if (strcmp(cmd, "LIST") == 0)
     {
-        handle_list_request(conn_fd, arg1);
+        if (parsed >= 2)
+        {
+            handle_list_request(conn_fd, arg1, 0, 0);
+        }
+        else
+        {
+            handle_user_list_request(conn_fd);
+        }
     }
     // Handle INFO command - arg1=filename, arg2=username
     else if (strcmp(cmd, "INFO") == 0 && parsed >= 3)

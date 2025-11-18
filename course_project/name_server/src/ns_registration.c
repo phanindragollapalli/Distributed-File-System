@@ -69,3 +69,19 @@ int get_ss_count()
 {
     return ss_count;
 }
+
+int get_client_count()
+{
+    return client_count;
+}
+
+int list_registered_users(char users[][32], int max_users)
+{
+    int count = (client_count < max_users) ? client_count : max_users;
+    for (int i = 0; i < count; ++i)
+    {
+        strncpy(users[i], client_list[i].username, 32);
+        users[i][31] = '\0';
+    }
+    return count;
+}
