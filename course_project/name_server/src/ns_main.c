@@ -876,6 +876,25 @@ void *handle_client(void *arg)
     {
         handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
     }
+    // Handle UPDATE_METADATA command - arg1=filename, arg2=size
+    else if (strcmp(cmd, "UPDATE_METADATA") == 0 && parsed >= 3)
+    {
+        // Parse file size
+        size_t new_size = (size_t)atol(arg2);
+
+        // Update metadata
+        if (update_file_metadata(arg1, new_size) == 0)
+        {
+            log_message(global_logger, LOG_DEBUG, "Updated metadata for file '%s': size=%zu", arg1, new_size);
+            const char *ack = "ACK METADATA_UPDATED\n";
+            write(conn_fd, ack, strlen(ack));
+        }
+        else
+        {
+            log_message(global_logger, LOG_WARN, "Failed to update metadata for file '%s'", arg1);
+            send_error_to_client(conn_fd, "Metadata update failed");
+        }
+    }
     // Handle CREATE command - arg1=filename, arg2=username
     else if (strcmp(cmd, "CREATE") == 0 && parsed >= 3)
     {

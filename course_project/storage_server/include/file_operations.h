@@ -45,6 +45,9 @@ int create_file(FileOperationContext *ctx, const char *filepath, const char *use
 int create_empty_file_on_disk(const char *full_path);
 int notify_ns_file_created(FileOperationContext *ctx, const char *filepath, const char *username);
 
+// Notify NS about metadata updates (size, timestamps)
+int notify_ns_metadata_update(FileOperationContext *ctx, const char *filepath);
+
 // READ operation
 char *read_file(FileOperationContext *ctx, const char *filepath, const char *username, int *error_code);
 FileStructure *load_and_parse_file(const char *filepath);

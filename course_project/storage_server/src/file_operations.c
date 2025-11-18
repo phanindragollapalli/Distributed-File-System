@@ -16,6 +16,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <libgen.h>
 #include <time.h>
@@ -545,6 +547,9 @@ int commit_write(FileOperationContext *ctx, WriteContext *wctx, const char *file
 
     log_message(ss_logger, LOG_INFO, "Committed write operation on %s by %s",
                 filepath, wctx->username);
+
+    // Notify name server of metadata update (file size/timestamp changed)
+    notify_ns_metadata_update(ctx, filepath);
 
     return SUCCESS;
 }
@@ -1538,4 +1543,86 @@ int stream_file(FileOperationContext *ctx, const char *filepath,
     }
 
     return result;
+}
+
+// Notify name server of metadata update (file size, timestamps)
+int notify_ns_metadata_update(FileOperationContext *ctx, const char *filepath)
+{
+    if (!ctx || !filepath)
+    {
+        log_message(ss_logger, LOG_ERROR, "Invalid parameters for notify_ns_metadata_update");
+        return ERR_NULL_POINTER;
+    }
+
+    // Get full path
+    char full_path[MAX_PATH_LEN];
+    if (get_full_path(ctx, filepath, full_path) != SUCCESS)
+    {
+        return ERR_INVALID_FORMAT;
+    }
+
+    // Get file size
+    struct stat st;
+    if (stat(full_path, &st) != 0)
+    {
+        log_message(ss_logger, LOG_WARN, "Failed to stat file for metadata update: %s", filepath);
+        return ERR_FILE_NOT_FOUND;
+    }
+
+    size_t file_size = st.st_size;
+
+    // Connect to name server
+    int ns_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (ns_sock < 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to create socket for NS metadata update");
+        return ERR_GENERAL;
+    }
+
+    struct sockaddr_in ns_addr;
+    memset(&ns_addr, 0, sizeof(ns_addr));
+    ns_addr.sin_family = AF_INET;
+    ns_addr.sin_port = htons(ctx->ns_port);
+    if (inet_pton(AF_INET, ctx->ns_ip, &ns_addr.sin_addr) <= 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Invalid NS IP address: %s", ctx->ns_ip);
+        close(ns_sock);
+        return ERR_GENERAL;
+    }
+
+    if (connect(ns_sock, (struct sockaddr *)&ns_addr, sizeof(ns_addr)) < 0)
+    {
+        log_message(ss_logger, LOG_WARN, "Failed to connect to NS for metadata update");
+        close(ns_sock);
+        return ERR_GENERAL;
+    }
+
+    // Send metadata update command: "UPDATE_METADATA <filename> <size>\n"
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "UPDATE_METADATA %s %zu\n", filepath, file_size);
+    if (write(ns_sock, cmd, strlen(cmd)) < 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to send metadata update to NS");
+        close(ns_sock);
+        return ERR_GENERAL;
+    }
+
+    // Wait for acknowledgment (optional but good practice)
+    char response[256];
+    int n = read(ns_sock, response, sizeof(response) - 1);
+    if (n > 0)
+    {
+        response[n] = '\0';
+        if (strncmp(response, "ACK", 3) == 0)
+        {
+            log_message(ss_logger, LOG_DEBUG, "NS metadata update ACK for file: %s", filepath);
+        }
+        else
+        {
+            log_message(ss_logger, LOG_WARN, "NS metadata update unexpected response: %s", response);
+        }
+    }
+
+    close(ns_sock);
+    return SUCCESS;
 }

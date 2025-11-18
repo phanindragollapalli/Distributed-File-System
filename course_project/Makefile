@@ -38,8 +38,9 @@ clean:
 # Clean everything (build artifacts + logs)
 distclean: clean
 	rm -rf logs/
-	rm -rf name_server/logs/ name_server/data/
-	rm -rf storage_server/logs/ storage_server/data/
+	rm -rf name_server/logs/
+	rm -rf name_server/data/
+	rm -rf storage_server/logs/storage_server/data/
 	rm -rf storage_server/storage/files/*
 	rm -rf data/
 

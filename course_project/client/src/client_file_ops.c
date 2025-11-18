@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -455,6 +456,7 @@ int handle_write_command(const char *filename, int sentence_index, const char *u
 
     printf("\n=== WRITE MODE ACTIVATED ===\n");
     printf("Enter word updates in format: <word_index> <content>\n");
+    printf("Multiple words separated by spaces will be inserted sequentially starting at the index (0-based).\n");
     printf("Type 'ETIRW' on a new line to commit changes.\n");
     printf("Type 'CANCEL' to abort.\n\n");
 
@@ -507,35 +509,76 @@ int handle_write_command(const char *filename, int sentence_index, const char *u
             break;
         }
 
-        // Parse word update: <word_index> <content>
-        int word_index;
-        char content[512];
-        if (sscanf(input, "%d %511[^\n]", &word_index, content) == 2)
-        {
-            // Send word update to SS
-            char word_msg[600];
-            snprintf(word_msg, sizeof(word_msg), "WORD %d %s\n", word_index, content);
-            send(ss_fd, word_msg, strlen(word_msg), 0);
+        char *cursor = input;
+        char *endptr;
+        long base_index = strtol(cursor, &endptr, 10);
 
-            // Get response
-            char word_response[256];
-            n = recv(ss_fd, word_response, sizeof(word_response) - 1, 0);
-            if (n > 0)
-            {
-                word_response[n] = '\0';
-                if (strncmp(word_response, "ACK", 3) == 0)
-                {
-                    printf("  ✓ Word %d updated\n", word_index);
-                }
-                else
-                {
-                    printf("  ✗ Error: %s\n", word_response);
-                }
-            }
-        }
-        else
+        if (cursor == endptr)
         {
             printf("Invalid format. Use: <word_index> <content>\n");
+            continue;
+        }
+
+        while (*endptr == ' ')
+        {
+            endptr++;
+        }
+
+        if (*endptr == '\0')
+        {
+            printf("Please provide one or more words after the index.\n");
+            continue;
+        }
+
+        if (base_index < 0 || base_index > INT_MAX)
+        {
+            printf("Invalid word index. Use 0-based non-negative integers.\n");
+            continue;
+        }
+
+        char content_copy[sizeof(input)];
+        strncpy(content_copy, endptr, sizeof(content_copy) - 1);
+        content_copy[sizeof(content_copy) - 1] = '\0';
+
+        char *saveptr = NULL;
+        char *token = strtok_r(content_copy, " ", &saveptr);
+        int current_index = (int)base_index;
+        int words_sent = 0;
+
+        while (token)
+        {
+            if (*token != '\0')
+            {
+                char word_msg[600];
+                snprintf(word_msg, sizeof(word_msg), "WORD %d %s\n", current_index, token);
+                send(ss_fd, word_msg, strlen(word_msg), 0);
+
+                char word_response[256];
+                n = recv(ss_fd, word_response, sizeof(word_response) - 1, 0);
+                if (n > 0)
+                {
+                    word_response[n] = '\0';
+                    if (strncmp(word_response, "ACK", 3) == 0)
+                    {
+                        printf("  ✓ Word %d updated (%s)\n", current_index, token);
+                    }
+                    else
+                    {
+                        printf("  ✗ Error on word %d: %s\n", current_index, word_response);
+                        break;
+                    }
+                }
+
+                current_index++;
+                words_sent++;
+            }
+
+            token = strtok_r(NULL, " ", &saveptr);
+        }
+
+        if (words_sent == 0)
+        {
+            printf("Please provide at least one non-empty word.\n");
         }
     }
 
