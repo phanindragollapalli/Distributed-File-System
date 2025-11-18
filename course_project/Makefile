@@ -41,4 +41,5 @@ distclean: clean
 	rm -rf name_server/logs/ name_server/data/
 	rm -rf storage_server/logs/ storage_server/data/
 	rm -rf storage_server/storage/files/*
+	rm -rf data/
 
