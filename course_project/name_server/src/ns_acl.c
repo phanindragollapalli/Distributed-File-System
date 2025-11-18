@@ -206,3 +206,9 @@ bool acl_remove_access(const char *filename, const char *user)
     }
     return false;
 }
+
+/* REMOVE ALL ACCESS - Remove entire ACL entry (called when file deleted) */
+void acl_remove_all_access(const char *filename)
+{
+    acl_delete_file(filename);
+}

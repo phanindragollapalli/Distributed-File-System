@@ -67,6 +67,62 @@ int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
     return 0;
 }
 
+static int trie_has_children(TrieNode *node)
+{
+    for (int i = 0; i < 256; i++)
+    {
+        if (node->children[i])
+            return 1;
+    }
+    return 0;
+}
+
+static int trie_remove_recursive(TrieNode *node, const char *filename, int depth)
+{
+    if (!node)
+        return 0;
+
+    if (filename[depth] == '\0')
+    {
+        if (!node->is_end_of_file)
+            return 0;
+
+        node->is_end_of_file = 0;
+        node->storage_server_id = -1;
+        if (node->file_name)
+        {
+            free(node->file_name);
+            node->file_name = NULL;
+        }
+
+        return trie_has_children(node) ? 0 : 1;
+    }
+
+    unsigned char idx = (unsigned char)filename[depth];
+    if (!node->children[idx])
+        return 0;
+
+    int should_delete_child = trie_remove_recursive(node->children[idx], filename, depth + 1);
+    if (should_delete_child)
+    {
+        free(node->children[idx]);
+        node->children[idx] = NULL;
+    }
+
+    if (node->is_end_of_file || node->file_name)
+        return 0;
+
+    return trie_has_children(node) ? 0 : 1;
+}
+
+void trie_remove(TrieNode *root, const char *filename)
+{
+    if (!root || !filename)
+        return;
+
+    trie_remove_recursive(root, filename, 0);
+}
+
 /* ========== TRIE PERSISTENCE FUNCTIONS ========== */
 
 #define TRIE_FILE "name_server/data/trie.dat"

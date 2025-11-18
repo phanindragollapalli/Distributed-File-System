@@ -48,17 +48,20 @@ int handle_create_command(const char *filename, const char *username)
     printf("Creating file: %s\n", filename);
 
     // Connect to Name Server
+    printf("DEBUG: Connecting to NS at 127.0.0.1:%d\n", NS_PORT);
     int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
         return -1;
     }
+    printf("DEBUG: Connected to NS, fd=%d\n", ns_fd);
 
     // Send CREATE request with username
     // Format: "CREATE <filename> <username>\n"
     char request[512];
     snprintf(request, sizeof(request), "CREATE %s %s\n", filename, username);
+    printf("DEBUG: Sending: %s", request);
 
     if (send_to_ns(ns_fd, request) < 0)
     {
@@ -66,10 +69,12 @@ int handle_create_command(const char *filename, const char *username)
         close(ns_fd);
         return -1;
     }
+    printf("DEBUG: Request sent, waiting for response...\n");
 
     // Receive response from NS
     char response[1024];
     int bytes_received = recv_from_ns(ns_fd, response, sizeof(response));
+    printf("DEBUG: Received %d bytes: %s\n", bytes_received, bytes_received > 0 ? response : "(none)");
 
     if (bytes_received <= 0)
     {
@@ -352,27 +357,189 @@ int handle_delete_command(const char *filename, const char *username)
  *   username - Writer's username (for ACL check)
  * Returns: 0 on success, -1 on failure
  */
-int handle_write_command(const char *filename, const char *username)
+int handle_write_command(const char *filename, int sentence_index, const char *username)
 {
-    if (!filename || !username)
+    if (!filename || !username || sentence_index < 0)
     {
         printf("Error: Invalid parameters\n");
         return -1;
     }
 
-    printf("Write mode for file: %s\n", filename);
-    printf("NOTE: WRITE command requires direct implementation\n");
-    printf("Usage:\n");
-    printf("  WRITE <filename> <sentence_number>\n");
-    printf("  <word_index> <content>\n");
-    printf("  <word_index> <content>\n");
-    printf("  ...\n");
-    printf("  ETIRW\n");
+    printf("WRITE mode: file='%s', sentence=%d\n", filename, sentence_index);
 
-    // This is a complex interactive command that requires
-    // direct SS connection and multi-step protocol
-    // Placeholder for Person 2 to implement fully
+    // Step 1: Connect to Name Server
+    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    if (ns_fd < 0)
+    {
+        printf("Error: Failed to connect to Name Server\n");
+        return -1;
+    }
 
+    // Step 2: Send WRITE request with ACL check
+    char request[512];
+    snprintf(request, sizeof(request), "WRITE %s %s %d\n", filename, username, sentence_index);
+
+    if (send_to_ns(ns_fd, request) < 0)
+    {
+        printf("Error: Failed to send WRITE request\n");
+        close(ns_fd);
+        return -1;
+    }
+
+    // Step 3: Receive SS info from NS (after ACL check)
+    char response[1024];
+    int bytes_received = recv_from_ns(ns_fd, response, sizeof(response));
+
+    if (bytes_received <= 0)
+    {
+        printf("Error: No response from Name Server\n");
+        close(ns_fd);
+        return -1;
+    }
+
+    // Check for error
+    if (strncmp(response, "ERROR", 5) == 0)
+    {
+        printf("%s\n", response + 7);
+        close(ns_fd);
+        return -1;
+    }
+
+    // Parse SS_INFO
+    char ss_ip[32];
+    int ss_port;
+    if (sscanf(response, "SS_INFO %31s %d", ss_ip, &ss_port) != 2)
+    {
+        printf("Error: Invalid response from Name Server\n");
+        close(ns_fd);
+        return -1;
+    }
+
+    close(ns_fd);
+
+    // Step 4: Connect to Storage Server
+    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (ss_fd < 0)
+    {
+        perror("Error creating socket for Storage Server");
+        return -1;
+    }
+
+    struct sockaddr_in ss_addr;
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_port);
+    inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr);
+
+    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
+    {
+        perror("Error connecting to Storage Server");
+        close(ss_fd);
+        return -1;
+    }
+
+    // Step 5: Begin write operation
+    char begin_write[512];
+    snprintf(begin_write, sizeof(begin_write), "BEGIN_WRITE %s %d %s\n",
+             filename, sentence_index, username);
+    send(ss_fd, begin_write, strlen(begin_write), 0);
+
+    // Wait for ACK
+    char ack[256];
+    int n = recv(ss_fd, ack, sizeof(ack) - 1, 0);
+    if (n <= 0 || strncmp(ack, "ACK", 3) != 0)
+    {
+        printf("Error: Failed to begin write operation\n");
+        close(ss_fd);
+        return -1;
+    }
+
+    printf("\n=== WRITE MODE ACTIVATED ===\n");
+    printf("Enter word updates in format: <word_index> <content>\n");
+    printf("Type 'ETIRW' on a new line to commit changes.\n");
+    printf("Type 'CANCEL' to abort.\n\n");
+
+    // Step 6: Interactive loop for word updates
+    char input[1024];
+    while (1)
+    {
+        printf("WRITE> ");
+        if (!fgets(input, sizeof(input), stdin))
+        {
+            break;
+        }
+
+        // Remove newline
+        input[strcspn(input, "\n")] = 0;
+
+        if (strlen(input) == 0)
+        {
+            continue;
+        }
+
+        // Check for commit command
+        if (strcmp(input, "ETIRW") == 0)
+        {
+            // Send commit command
+            send(ss_fd, "COMMIT\n", 7, 0);
+
+            char commit_response[256];
+            n = recv(ss_fd, commit_response, sizeof(commit_response) - 1, 0);
+            if (n > 0)
+            {
+                commit_response[n] = '\0';
+                if (strncmp(commit_response, "SUCCESS", 7) == 0)
+                {
+                    printf("\n✓ Write operation committed successfully\n");
+                }
+                else
+                {
+                    printf("\n✗ Commit failed: %s\n", commit_response);
+                }
+            }
+            break;
+        }
+
+        // Check for cancel
+        if (strcmp(input, "CANCEL") == 0)
+        {
+            send(ss_fd, "ROLLBACK\n", 9, 0);
+            printf("\n✗ Write operation cancelled\n");
+            break;
+        }
+
+        // Parse word update: <word_index> <content>
+        int word_index;
+        char content[512];
+        if (sscanf(input, "%d %511[^\n]", &word_index, content) == 2)
+        {
+            // Send word update to SS
+            char word_msg[600];
+            snprintf(word_msg, sizeof(word_msg), "WORD %d %s\n", word_index, content);
+            send(ss_fd, word_msg, strlen(word_msg), 0);
+
+            // Get response
+            char word_response[256];
+            n = recv(ss_fd, word_response, sizeof(word_response) - 1, 0);
+            if (n > 0)
+            {
+                word_response[n] = '\0';
+                if (strncmp(word_response, "ACK", 3) == 0)
+                {
+                    printf("  ✓ Word %d updated\n", word_index);
+                }
+                else
+                {
+                    printf("  ✗ Error: %s\n", word_response);
+                }
+            }
+        }
+        else
+        {
+            printf("Invalid format. Use: <word_index> <content>\n");
+        }
+    }
+
+    close(ss_fd);
     return 0;
 }
 

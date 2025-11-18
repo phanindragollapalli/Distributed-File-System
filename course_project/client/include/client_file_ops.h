@@ -41,10 +41,11 @@ int handle_read_command(const char *filename, const char *username);
  * Uses protocol: WRITE -> word updates -> ETIRW
  * Parameters:
  *   filename - Name of file to write
+ *   sentence_index - Index of sentence to modify
  *   username - Writer's username (for ACL check)
  * Returns: 0 on success, -1 on failure
  */
-int handle_write_command(const char *filename, const char *username);
+int handle_write_command(const char *filename, int sentence_index, const char *username);
 
 /* DELETE command - Person 2, Day 10
  * Deletes file and cleans up all metadata

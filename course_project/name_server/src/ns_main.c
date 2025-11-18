@@ -27,10 +27,61 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <signal.h>
+#include <errno.h>
 
 Logger *global_logger = NULL;
 TrieNode *global_file_trie = NULL;
+
+static void ensure_directory(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) == 0)
+    {
+        if (S_ISDIR(st.st_mode))
+            return;
+        fprintf(stderr, "Path exists but is not a directory: %s\n", path);
+        return;
+    }
+
+    if (mkdir(path, 0755) != 0 && errno != EEXIST)
+    {
+        fprintf(stderr, "Failed to create directory %s: %s\n", path, strerror(errno));
+    }
+}
+
+static void parse_file_list_chunk(const char *data, char files[][128], int *file_count, int *list_complete)
+{
+    if (!data || !*data || *list_complete)
+        return;
+
+    char temp[4096];
+    strncpy(temp, data, sizeof(temp) - 1);
+    temp[sizeof(temp) - 1] = '\0';
+
+    char *save_ptr;
+    char *line = strtok_r(temp, "\n", &save_ptr);
+    while (line && !*list_complete)
+    {
+        if (strncmp(line, "FILE ", 5) == 0)
+        {
+            if (*file_count < 128)
+            {
+                strncpy(files[*file_count], line + 5, 128);
+                files[*file_count][127] = '\0';
+                (*file_count)++;
+            }
+        }
+        else if (strcmp(line, "END_FILE_LIST") == 0)
+        {
+            *list_complete = 1;
+        }
+        line = strtok_r(NULL, "\n", &save_ptr);
+    }
+}
 
 /* ========== AUTO-SAVE FUNCTIONALITY ========== */
 
@@ -512,39 +563,32 @@ void *handle_storage_server(void *arg)
         /* Prepare to collect list of accessible files from this Storage Server */
         char files[128][128];
         int file_count = 0;
+        int list_complete = 0;
+
+        /* Process any file entries that arrived with the registration line */
+        char *first_line_end = strchr(buffer, '\n');
+        if (first_line_end && *(first_line_end + 1) != '\0')
+        {
+            parse_file_list_chunk(first_line_end + 1, files, &file_count, &list_complete);
+        }
 
         /* Read file list messages until END_FILE_LIST marker */
-        while (1)
+        while (!list_complete)
         {
             bytes_read = read(conn_fd, buffer, sizeof(buffer) - 1);
             if (bytes_read <= 0)
-                break;
-            buffer[bytes_read] = '\0';
-
-            /* Parse FILE messages line by line */
-            char *line = strtok(buffer, "\n");
-            while (line != NULL)
             {
-                if (strncmp(line, "FILE ", 5) == 0)
-                {
-                    strncpy(files[file_count], line + 5, 128);
-                    files[file_count][127] = '\0';
-                    file_count++;
-                    if (file_count >= 128)
-                        break;
-                }
-                else if (strcmp(line, "END_FILE_LIST") == 0)
-                {
-                    goto done_reading;
-                }
-                line = strtok(NULL, "\n");
+                log_message(global_logger, LOG_WARN,
+                            "SS registration: connection closed before END_FILE_LIST");
+                break;
             }
+            buffer[bytes_read] = '\0';
+            parse_file_list_chunk(buffer, files, &file_count, &list_complete);
         }
 
-    done_reading:
         /* Register the Storage Server and get assigned SS_ID */
         int ss_id = register_storage_server(ss_ip, ss_nm_port, ss_client_port,
-                                            (const char (*)[128])files, file_count);
+                                            (const char (*)[128])files, file_count, conn_fd);
 
         /* Insert all files into Trie for efficient O(m) lookup where m is path length */
         for (int i = 0; i < file_count; i++)
@@ -561,6 +605,9 @@ void *handle_storage_server(void *arg)
 
         log_message(global_logger, LOG_INFO, "Successfully registered SS %d with %d files",
                     ss_id, file_count);
+
+        // Keep connection open for future NS→SS commands
+        return NULL;
     }
     else
     {
@@ -649,6 +696,226 @@ void *handle_client(void *arg)
     {
         handle_exec_request(conn_fd, arg1, arg2);
     }
+    // Handle READ command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "READ") == 0 && parsed >= 3)
+    {
+        handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
+    }
+    // Handle WRITE command - arg1=filename, arg2=username, arg3=sentence_index
+    else if (strcmp(cmd, "WRITE") == 0 && parsed >= 4)
+    {
+        // Check if user has WRITE permission
+        if (!acl_can_write(arg1, arg2))
+        {
+            log_message(global_logger, LOG_WARN, "WRITE denied: user='%s', file='%s'", arg2, arg1);
+            send_error_to_client(conn_fd, "Permission denied. You need WRITE access");
+        }
+        else
+        {
+            // Return SS info for direct connection
+            int ss_id;
+            if (trie_search(global_file_trie, arg1, &ss_id))
+            {
+                StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+                send_ss_info_to_client(conn_fd, ss_info);
+            }
+            else
+            {
+                send_error_to_client(conn_fd, "File not found");
+            }
+        }
+    }
+    // Handle STREAM command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "STREAM") == 0 && parsed >= 3)
+    {
+        handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
+    }
+    // Handle CREATE command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "CREATE") == 0 && parsed >= 3)
+    {
+        log_message(global_logger, LOG_INFO, "CREATE request: file='%s', user='%s'", arg1, arg2);
+
+        // Check if file already exists
+        int ss_id;
+        if (trie_search(global_file_trie, arg1, &ss_id))
+        {
+            send_error_to_client(conn_fd, "File already exists");
+        }
+        else
+        {
+            // Select SS (round-robin or first available)
+            int total_ss = get_ss_count();
+            int target_ss_id = 0; // TODO: implement better selection policy
+            log_message(global_logger, LOG_DEBUG, "CREATE: Total SS count = %d", total_ss);
+            StorageServerInfo *ss_info = get_ss_by_id(target_ss_id);
+            if (!ss_info || ss_info->ns_fd <= 0)
+            {
+                log_message(global_logger, LOG_ERROR,
+                            "CREATE failed: No storage server control connection available (count=%d)", total_ss);
+                send_error_to_client(conn_fd, "No storage server available");
+            }
+            else
+            {
+                char error_detail[256] = "Storage server failed to create file";
+                int create_success = 0;
+
+                pthread_mutex_lock(&ss_info->command_lock);
+
+                do
+                {
+                    char ss_cmd[512];
+                    snprintf(ss_cmd, sizeof(ss_cmd), "CREATE %s\n", arg1);
+
+                    if (write(ss_info->ns_fd, ss_cmd, strlen(ss_cmd)) < 0)
+                    {
+                        log_message(global_logger, LOG_ERROR,
+                                    "CREATE: Failed to send command to SS (%s:%d)",
+                                    ss_info->ss_ip, ss_info->ss_nm_port);
+                        snprintf(error_detail, sizeof(error_detail),
+                                 "Failed to contact storage server");
+                        break;
+                    }
+
+                    char ss_response[256];
+                    int n = read(ss_info->ns_fd, ss_response, sizeof(ss_response) - 1);
+                    if (n <= 0)
+                    {
+                        log_message(global_logger, LOG_ERROR,
+                                    "CREATE: Failed to read response from SS (%s:%d)",
+                                    ss_info->ss_ip, ss_info->ss_nm_port);
+                        snprintf(error_detail, sizeof(error_detail),
+                                 "No response from storage server");
+                        break;
+                    }
+
+                    ss_response[n] = '\0';
+                    if (strncmp(ss_response, "ACK", 3) == 0)
+                    {
+                        create_success = 1;
+                    }
+                    else
+                    {
+                        snprintf(error_detail, sizeof(error_detail), "%s", ss_response);
+                        log_message(global_logger, LOG_ERROR,
+                                    "CREATE: SS returned error: %s", ss_response);
+                    }
+                } while (0);
+
+                pthread_mutex_unlock(&ss_info->command_lock);
+
+                if (create_success)
+                {
+                    // Add to Trie and metadata
+                    trie_insert(global_file_trie, arg1, target_ss_id);
+                    add_file_metadata(arg1, arg2, target_ss_id);
+
+                    // Initialize ACL (owner gets full access)
+                    acl_create_file(arg1, arg2);
+
+                    const char *ack = "ACK CREATED\n";
+                    write(conn_fd, ack, strlen(ack));
+                    log_message(global_logger, LOG_INFO, "File '%s' created by '%s'", arg1, arg2);
+                }
+                else
+                {
+                    send_error_to_client(conn_fd, error_detail);
+                }
+            }
+        }
+    }
+    // Handle DELETE command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "DELETE") == 0 && parsed >= 3)
+    {
+        log_message(global_logger, LOG_INFO, "DELETE request: file='%s', user='%s'", arg1, arg2);
+
+        // Check if file exists
+        int ss_id;
+        if (!trie_search(global_file_trie, arg1, &ss_id))
+        {
+            send_error_to_client(conn_fd, "File not found");
+        }
+        else
+        {
+            // Check if user is owner
+            FileMetadata *meta = get_file_metadata(arg1);
+            if (meta && strcmp(meta->owner, arg2) != 0)
+            {
+                send_error_to_client(conn_fd, "Only the owner can delete the file");
+            }
+            else
+            {
+                StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+                if (!ss_info || ss_info->ns_fd <= 0)
+                {
+                    send_error_to_client(conn_fd, "Storage Server connection unavailable");
+                    close(conn_fd);
+                    return NULL;
+                }
+
+                char error_detail[256] = "Storage server failed to delete file";
+                int delete_success = 0;
+
+                pthread_mutex_lock(&ss_info->command_lock);
+
+                do
+                {
+                    char ss_cmd[512];
+                    snprintf(ss_cmd, sizeof(ss_cmd), "DELETE %s\n", arg1);
+
+                    if (write(ss_info->ns_fd, ss_cmd, strlen(ss_cmd)) < 0)
+                    {
+                        log_message(global_logger, LOG_ERROR,
+                                    "DELETE: Failed to send command to SS (%s:%d)",
+                                    ss_info->ss_ip, ss_info->ss_nm_port);
+                        snprintf(error_detail, sizeof(error_detail),
+                                 "Failed to contact storage server");
+                        break;
+                    }
+
+                    char ss_response[256];
+                    int n = read(ss_info->ns_fd, ss_response, sizeof(ss_response) - 1);
+                    if (n <= 0)
+                    {
+                        log_message(global_logger, LOG_ERROR,
+                                    "DELETE: Failed to read response from SS (%s:%d)",
+                                    ss_info->ss_ip, ss_info->ss_nm_port);
+                        snprintf(error_detail, sizeof(error_detail),
+                                 "No response from storage server");
+                        break;
+                    }
+
+                    ss_response[n] = '\0';
+                    if (strncmp(ss_response, "ACK", 3) == 0)
+                    {
+                        delete_success = 1;
+                    }
+                    else
+                    {
+                        snprintf(error_detail, sizeof(error_detail), "%s", ss_response);
+                        log_message(global_logger, LOG_ERROR,
+                                    "DELETE: SS returned error: %s", ss_response);
+                    }
+                } while (0);
+
+                pthread_mutex_unlock(&ss_info->command_lock);
+
+                if (delete_success)
+                {
+                    delete_file_metadata(arg1);
+                    acl_delete_file(arg1);
+                    trie_remove(global_file_trie, arg1);
+
+                    const char *ack = "ACK DELETED\n";
+                    write(conn_fd, ack, strlen(ack));
+                    log_message(global_logger, LOG_INFO, "File '%s' deleted by '%s'", arg1, arg2);
+                }
+                else
+                {
+                    send_error_to_client(conn_fd, error_detail);
+                }
+            }
+        }
+    }
     else
     {
         log_message(global_logger, LOG_WARN, "Unknown or malformed command: %s", cmd);
@@ -661,6 +928,10 @@ void *handle_client(void *arg)
 
 int main()
 {
+    ensure_directory("logs");
+    ensure_directory("name_server");
+    ensure_directory("name_server/data");
+
     // Initialize logger
     global_logger = logger_init("logs/ns.log", "NameServer", LOG_DEBUG, 1);
     if (!global_logger)

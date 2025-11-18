@@ -12,16 +12,228 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <limits.h>
 #include "../../common/include/protocol.h"
 #include "../include/ss_network.h"
 #include "../include/ss_registration.h"
 #include "../include/ss_commands.h"
 #include "../include/ss_persistence.h"
+#include "../include/file_operations.h"
 #include "../../common/include/logger.h"
 #include "../../common/include/error_codes.h"
 
 Logger *ss_logger = NULL;
-static char storage_dir[256] = "storage/files";
+static char storage_dir[256] = "";
+static FileOperationContext *file_ops_ctx = NULL;
+
+static int directory_exists(const char *path)
+{
+    struct stat st;
+    return (stat(path, &st) == 0) && S_ISDIR(st.st_mode);
+}
+
+static ssize_t read_line_from_socket(int fd, char *buffer, size_t max_len)
+{
+    size_t pos = 0;
+    while (pos < max_len - 1)
+    {
+        char c;
+        ssize_t bytes = recv(fd, &c, 1, 0);
+        if (bytes < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return -1;
+        }
+
+        if (bytes == 0)
+        {
+            return 0;
+        }
+
+        if (c == '\r')
+        {
+            continue;
+        }
+
+        if (c == '\n')
+        {
+            break;
+        }
+
+        buffer[pos++] = c;
+    }
+
+    buffer[pos] = '\0';
+    return (ssize_t)pos;
+}
+
+static void handle_write_session(int client_fd, const char *filename, int sentence_index, const char *username)
+{
+    if (!file_ops_ctx)
+    {
+        send_error_response(client_fd, ERR_GENERAL);
+        return;
+    }
+
+    int error_code = SUCCESS;
+    WriteContext *wctx = begin_write(file_ops_ctx, filename, sentence_index, username, &error_code);
+    if (!wctx)
+    {
+        if (error_code == SUCCESS)
+        {
+            error_code = ERR_GENERAL;
+        }
+        send_error_response(client_fd, error_code);
+        log_message(ss_logger, LOG_WARN, "BEGIN_WRITE failed for file '%s' (user=%s)", filename, username);
+        return;
+    }
+
+    log_message(ss_logger, LOG_INFO, "BEGIN_WRITE accepted for file='%s', sentence=%d, user='%s'",
+                filename, sentence_index, username);
+    const char *ack = "ACK BEGIN_WRITE\n";
+    write(client_fd, ack, strlen(ack));
+
+    char line[1024];
+    while (1)
+    {
+        ssize_t len = read_line_from_socket(client_fd, line, sizeof(line));
+        if (len <= 0)
+        {
+            log_message(ss_logger, LOG_WARN,
+                        "WRITE session aborted due to client disconnect for file='%s'", filename);
+            rollback_write(file_ops_ctx, wctx, filename);
+            cleanup_write_context(wctx);
+            return;
+        }
+
+        if (len == 0)
+        {
+            continue;
+        }
+
+        if (strcmp(line, "COMMIT") == 0)
+        {
+            int result = commit_write(file_ops_ctx, wctx, filename);
+            if (result == SUCCESS)
+            {
+                const char *success = "SUCCESS Write committed\n";
+                write(client_fd, success, strlen(success));
+                log_message(ss_logger, LOG_INFO, "WRITE committed for file='%s' by '%s'", filename, username);
+            }
+            else
+            {
+                send_error_response(client_fd, result);
+                log_message(ss_logger, LOG_ERROR,
+                            "WRITE commit failed for file='%s': %s",
+                            filename, error_code_to_string(result));
+            }
+
+            cleanup_write_context(wctx);
+            return;
+        }
+        else if (strcmp(line, "ROLLBACK") == 0)
+        {
+            rollback_write(file_ops_ctx, wctx, filename);
+            cleanup_write_context(wctx);
+            const char *rolled_back = "SUCCESS Write rolled back\n";
+            write(client_fd, rolled_back, strlen(rolled_back));
+            log_message(ss_logger, LOG_INFO, "WRITE rolled back for file='%s' by '%s'", filename, username);
+            return;
+        }
+        else if (strncmp(line, "WORD", 4) == 0)
+        {
+            const char *args = line + 4;
+            while (*args == ' ')
+            {
+                args++;
+            }
+
+            if (*args == '\0')
+            {
+                send_error_response(client_fd, ERR_INVALID_FORMAT);
+                continue;
+            }
+
+            char *endptr;
+            long index_long = strtol(args, &endptr, 10);
+            if (args == endptr)
+            {
+                send_error_response(client_fd, ERR_INVALID_FORMAT);
+                continue;
+            }
+
+            while (*endptr == ' ')
+            {
+                endptr++;
+            }
+
+            if (*endptr == '\0')
+            {
+                send_error_response(client_fd, ERR_INVALID_FORMAT);
+                continue;
+            }
+
+            if (index_long < 0 || index_long > INT_MAX)
+            {
+                send_error_response(client_fd, ERR_INVALID_INDEX);
+                continue;
+            }
+
+            int result = write_word(wctx, (int)index_long, endptr);
+            if (result == SUCCESS)
+            {
+                char ack_word[64];
+                snprintf(ack_word, sizeof(ack_word), "ACK WORD %ld\n", index_long);
+                write(client_fd, ack_word, strlen(ack_word));
+                log_message(ss_logger, LOG_DEBUG,
+                            "WORD updated: file='%s', sentence=%d, word=%ld",
+                            filename, sentence_index, index_long);
+            }
+            else
+            {
+                send_error_response(client_fd, result);
+                log_message(ss_logger, LOG_WARN,
+                            "WORD update failed: file='%s', word=%ld, error=%s",
+                            filename, index_long, error_code_to_string(result));
+            }
+        }
+        else
+        {
+            send_error_response(client_fd, ERR_INVALID_FORMAT);
+        }
+    }
+}
+
+static void resolve_storage_directory()
+{
+    const char *candidates[] = {
+        "storage/files",
+        "storage_server/storage/files",
+        "../storage_server/storage/files"};
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++)
+    {
+        if (directory_exists(candidates[i]))
+        {
+            strncpy(storage_dir, candidates[i], sizeof(storage_dir) - 1);
+            storage_dir[sizeof(storage_dir) - 1] = '\0';
+            log_message(ss_logger, LOG_INFO, "Using storage directory: %s", storage_dir);
+            return;
+        }
+    }
+
+    // Fall back to default path and warn user
+    strncpy(storage_dir, candidates[0], sizeof(storage_dir) - 1);
+    storage_dir[sizeof(storage_dir) - 1] = '\0';
+    log_message(ss_logger, LOG_WARN,
+                "Storage directory not found; defaulting to %s (ensure this path exists)",
+                storage_dir);
+}
 
 /* Thread handler for NS commands - Person 1, Days 5-7
  * Handles commands from Name Server (CREATE, DELETE, etc.)
@@ -69,9 +281,10 @@ void *handle_client_request(void *arg)
 
     buffer[bytes_read] = '\0';
 
-    // Parse command: "READ <filename>" or "STREAM <filename>"
+    // Parse command: "READ <filename>", "STREAM <filename>", or write protocol commands
     char cmd[64], filename[256];
-    if (sscanf(buffer, "%63s %255s", cmd, filename) != 2)
+    int parsed = sscanf(buffer, "%63s %255s", cmd, filename);
+    if (parsed < 1)
     {
         const char *error = "ERROR: Invalid command format\n";
         write(client_fd, error, strlen(error));
@@ -80,12 +293,26 @@ void *handle_client_request(void *arg)
         return NULL;
     }
 
-    // Build full file path
+    // Build full file path (used by READ/STREAM)
     char filepath[512];
-    snprintf(filepath, sizeof(filepath), "%s/%s", storage_dir, filename);
+    if (parsed >= 2)
+    {
+        snprintf(filepath, sizeof(filepath), "%s/%s", storage_dir, filename);
+    }
+    else
+    {
+        filepath[0] = '\0';
+    }
 
     if (strcmp(cmd, "READ") == 0)
     {
+        if (parsed < 2)
+        {
+            const char *error = "ERROR: READ requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
         log_message(ss_logger, LOG_INFO, "Client READ request for file: %s", filename);
 
         // Open and send file contents
@@ -115,8 +342,32 @@ void *handle_client_request(void *arg)
             log_message(ss_logger, LOG_WARN, "File not found: %s", filepath);
         }
     }
+    else if (strcmp(cmd, "BEGIN_WRITE") == 0)
+    {
+        int sentence_index;
+        char user[64];
+        if (sscanf(buffer, "BEGIN_WRITE %255s %d %63s", filename, &sentence_index, user) != 3)
+        {
+            const char *error = "ERROR: Invalid BEGIN_WRITE format\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_WARN, "Malformed BEGIN_WRITE command: %s", buffer);
+            close(client_fd);
+            return NULL;
+        }
+
+        handle_write_session(client_fd, filename, sentence_index, user);
+        close(client_fd);
+        return NULL;
+    }
     else if (strcmp(cmd, "STREAM") == 0)
     {
+        if (parsed < 2)
+        {
+            const char *error = "ERROR: STREAM requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
         log_message(ss_logger, LOG_INFO, "Client STREAM request for file: %s", filename);
 
         // Open file for streaming
@@ -224,6 +475,16 @@ int main()
 
     log_message(ss_logger, LOG_INFO, "Starting Storage Server");
 
+    resolve_storage_directory();
+
+    file_ops_ctx = init_file_operations(storage_dir, 0, "127.0.0.1", NS_PORT);
+    if (!file_ops_ctx)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to initialize file operations context");
+        logger_close(ss_logger);
+        return 1;
+    }
+
     // Initialize persistence system
     if (init_persistence("data") < 0)
     {
@@ -243,9 +504,9 @@ int main()
 
     log_connection(ss_logger, "CONNECTED", "127.0.0.1", NS_PORT);
 
-    // Register with NS (using SS_PORT for client connections)
-    int client_port = SS_PORT + 100; // Different port for direct client connections
-    if (register_with_ns(ns_fd, "127.0.0.1", SS_PORT, client_port))
+    // Register with NS (using SS_BASE_PORT for client connections)
+    int client_port = SS_BASE_PORT + 100; // Different port for direct client connections
+    if (register_with_ns(ns_fd, "127.0.0.1", SS_BASE_PORT, client_port))
     {
         log_message(ss_logger, LOG_INFO, "Successfully registered with Name Server (client_port=%d)",
                     client_port);
@@ -256,8 +517,16 @@ int main()
     }
 
     // Send file list to NS
-    send_file_list_to_ns(ns_fd, storage_dir);
-    log_message(ss_logger, LOG_INFO, "Sent file list to Name Server");
+    if (send_file_list_to_ns(ns_fd, storage_dir) == 0)
+    {
+        log_message(ss_logger, LOG_INFO, "Sent file list to Name Server");
+    }
+    else
+    {
+        log_message(ss_logger, LOG_ERROR,
+                    "Failed to enumerate files in %s; Storage Server will not be registered",
+                    storage_dir);
+    }
 
     // Create thread to handle NS commands
     pthread_t ns_thread;

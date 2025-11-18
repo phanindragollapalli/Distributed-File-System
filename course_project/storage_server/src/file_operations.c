@@ -197,11 +197,10 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
         return NULL;
     }
 
-    // Validate sentence index
-    if (sentence_index < 0 || sentence_index >= wctx->file->sentence_count)
+    // Validate / extend sentence index
+    if (sentence_index < 0)
     {
-        log_message(ss_logger, LOG_WARN, "Sentence index %d out of range (max: %d)",
-                    sentence_index, wctx->file->sentence_count - 1);
+        log_message(ss_logger, LOG_WARN, "Sentence index %d is negative", sentence_index);
         destroy_file_structure(wctx->file);
         if (wctx->has_backup)
         {
@@ -211,6 +210,55 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
         if (error_code)
             *error_code = ERR_SENTENCE_OUT_OF_RANGE;
         return NULL;
+    }
+
+    if (sentence_index > wctx->file->sentence_count)
+    {
+        log_message(ss_logger, LOG_WARN, "Sentence index %d beyond max append position %d",
+                    sentence_index, wctx->file->sentence_count);
+        destroy_file_structure(wctx->file);
+        if (wctx->has_backup)
+        {
+            delete_backup(wctx->backup_path);
+        }
+        free(wctx);
+        if (error_code)
+            *error_code = ERR_SENTENCE_OUT_OF_RANGE;
+        return NULL;
+    }
+
+    if (sentence_index == wctx->file->sentence_count)
+    {
+        // Append a new empty sentence to support writing to empty files or new sentences
+        SentenceNode *new_sentence = create_sentence_node(sentence_index);
+        if (!new_sentence)
+        {
+            log_message(ss_logger, LOG_ERROR, "Failed to create sentence %d", sentence_index);
+            destroy_file_structure(wctx->file);
+            if (wctx->has_backup)
+            {
+                delete_backup(wctx->backup_path);
+            }
+            free(wctx);
+            if (error_code)
+                *error_code = ERR_MEMORY;
+            return NULL;
+        }
+
+        if (add_sentence(wctx->file, new_sentence) != SUCCESS)
+        {
+            log_message(ss_logger, LOG_ERROR, "Failed to append sentence %d", sentence_index);
+            destroy_sentence_node(new_sentence);
+            destroy_file_structure(wctx->file);
+            if (wctx->has_backup)
+            {
+                delete_backup(wctx->backup_path);
+            }
+            free(wctx);
+            if (error_code)
+                *error_code = ERR_GENERAL;
+            return NULL;
+        }
     }
 
     wctx->sentence_index = sentence_index;
@@ -539,10 +587,29 @@ void rollback_write(FileOperationContext *ctx, WriteContext *wctx, const char *f
         }
     }
 
-    // Restore from backup if available
-    if (wctx->has_backup && filepath)
+    const char *requested_path = filepath;
+    if ((!requested_path || requested_path[0] == '\0') && wctx->filepath[0] != '\0')
     {
-        restore_backup(wctx->backup_path, filepath);
+        requested_path = wctx->filepath;
+    }
+
+    const char *restore_target = requested_path;
+    char full_path[MAX_PATH_LEN];
+    if (ctx && requested_path && requested_path[0] != '\0')
+    {
+        size_t storage_len = strlen(ctx->storage_path);
+        if (strncmp(requested_path, ctx->storage_path, storage_len) != 0)
+        {
+            if (get_full_path(ctx, requested_path, full_path) == SUCCESS)
+            {
+                restore_target = full_path;
+            }
+        }
+    }
+
+    if (wctx->has_backup && restore_target && restore_target[0] != '\0')
+    {
+        restore_backup(wctx->backup_path, restore_target);
     }
 }
 

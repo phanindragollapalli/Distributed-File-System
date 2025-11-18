@@ -47,6 +47,7 @@ void acl_delete_file(const char *filename);
 bool acl_add_read(const char *filename, const char *user);
 bool acl_add_write(const char *filename, const char *user);
 bool acl_remove_access(const char *filename, const char *user);
+void acl_remove_all_access(const char *filename);
 
 // Check permissions
 bool acl_can_read(const char *filename, const char *user);

@@ -14,6 +14,7 @@ typedef struct TrieNode
 TrieNode *trie_create_node();
 void trie_insert(TrieNode *root, const char *filename, int ss_id);
 int trie_search(TrieNode *root, const char *filename, int *ss_id_out);
+void trie_remove(TrieNode *root, const char *filename);
 
 /* ========== DAY 13: PERSISTENCE FUNCTIONS ========== */
 

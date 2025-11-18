@@ -188,7 +188,8 @@ int parse_file_content(FileStructure *file, const char *content)
         return ERR_MEMORY;
     }
 
-    char *line = strtok_r(content_copy, "\n", &content_copy);
+    char *save_ptr = NULL;
+    char *line = strtok_r(content_copy, "\n", &save_ptr);
     while (line)
     {
         int result = parse_line(file, line);
@@ -197,7 +198,7 @@ int parse_file_content(FileStructure *file, const char *content)
             free(content_copy);
             return result;
         }
-        line = strtok_r(NULL, "\n", &line);
+        line = strtok_r(NULL, "\n", &save_ptr);
     }
 
     free(content_copy);

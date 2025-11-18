@@ -41,7 +41,7 @@ int main()
     // Register with Name Server
     char reg_msg[256];
     snprintf(reg_msg, sizeof(reg_msg), "REGISTER_CLIENT %s 127.0.0.1 %d\n",
-             username, CLIENT_PORT);
+             username, CLIENT_BASE_PORT);
     write(ns_fd, reg_msg, strlen(reg_msg));
 
     // Wait for ACK

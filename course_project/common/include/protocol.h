@@ -2,10 +2,12 @@
 #define PROTOCOL_H
 
 #include <stddef.h>
+#include "constants.h"
 
-#define NS_PORT 9000
-#define SS_PORT 9001
-#define CLIENT_PORT 9002
+// Ports are defined in constants.h
+// NS_PORT = 8080
+// SS_BASE_PORT = 9000
+// CLIENT_BASE_PORT = 10000
 
 // Define message types
 typedef enum

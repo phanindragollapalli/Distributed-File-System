@@ -90,6 +90,59 @@ int execute_command(const char *command, const char *username)
             return -1;
         }
     }
+    else if (strcmp(cmd, "READ") == 0)
+    {
+        char filename[256];
+        if (sscanf(command, "READ %255s", filename) == 1)
+        {
+            return handle_read_command(filename, username);
+        }
+        else
+        {
+            printf("Usage: READ <filename>\n");
+            return -1;
+        }
+    }
+    else if (strcmp(cmd, "WRITE") == 0)
+    {
+        char filename[256];
+        int sentence_index;
+        if (sscanf(command, "WRITE %255s %d", filename, &sentence_index) == 2)
+        {
+            return handle_write_command(filename, sentence_index, username);
+        }
+        else
+        {
+            printf("Usage: WRITE <filename> <sentence_index>\n");
+            return -1;
+        }
+    }
+    else if (strcmp(cmd, "UNDO") == 0)
+    {
+        char filename[256];
+        if (sscanf(command, "UNDO %255s", filename) == 1)
+        {
+            return handle_undo_command(filename, username);
+        }
+        else
+        {
+            printf("Usage: UNDO <filename>\n");
+            return -1;
+        }
+    }
+    else if (strcmp(cmd, "STREAM") == 0)
+    {
+        char filename[256];
+        if (sscanf(command, "STREAM %255s", filename) == 1)
+        {
+            return handle_stream_command(filename, username);
+        }
+        else
+        {
+            printf("Usage: STREAM <filename>\n");
+            return -1;
+        }
+    }
     else
     {
         printf("Unknown command: %s\n", cmd);

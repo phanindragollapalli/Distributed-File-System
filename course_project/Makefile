@@ -5,10 +5,11 @@ SUBDIRS := common client name_server storage_server
 
 # BIN_DIR relative to project root. Compute absolute path and pass to sub-makes
 BIN_DIR := bin
+LOGS_DIR := logs
 ABS_BIN_DIR := $(abspath $(BIN_DIR))
 
 # Build common first, then the servers/clients which link against it
-all: common client name_server storage_server | $(BIN_DIR)
+all: common client name_server storage_server | $(BIN_DIR) $(LOGS_DIR)
 
 common:
 	$(MAKE) -C common
@@ -25,6 +26,9 @@ storage_server: common
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
+
+$(LOGS_DIR):
+	mkdir -p $(LOGS_DIR)
 
 # Clean build artifacts (bin/, *.o)
 clean:

@@ -19,16 +19,8 @@ int register_with_ns(int ns_fd, const char *ss_ip, int ss_nm_port, int ss_client
     char msg[512];
     snprintf(msg, sizeof(msg), "REGISTER_SS %s %d %d\n", ss_ip, ss_nm_port, ss_client_port);
     write(ns_fd, msg, strlen(msg));
-    // Optionally, wait for ACK from NS
-    char ack[64];
-    int n = read(ns_fd, ack, sizeof(ack) - 1);
-    if (n > 0)
-    {
-        ack[n] = '\0';
-        if (strstr(ack, "ACK"))
-            return 1;
-    }
-    return 0;
+    // Don't wait for ACK here - NS sends ACK after receiving file list
+    return 1;
 }
 
 // send_file_list_to_ns: sends all current filenames to NS

@@ -13,10 +13,10 @@
 /* Handle STREAM command
  * Connects to NS to get SS info, then streams file content from SS
  * Parameters:
- *   command  - Full command string (e.g., "STREAM document.txt")
+ *   filename - Name of file to stream
  *   username - Username for ACL permission check
  * Returns: 0 on success, -1 on failure
  */
-int handle_stream_command(const char *command, const char *username);
+int handle_stream_command(const char *filename, const char *username);
 
 #endif
