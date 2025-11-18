@@ -521,9 +521,8 @@ void *handle_client_request(void *arg)
         }
         log_message(ss_logger, LOG_INFO, "Client STREAM request for file: %s", filename);
 
-        // Open file for streaming
-        FILE *f = fopen(filepath, "r");
-        if (!f)
+        // Check initial file existence
+        if (!file_exists(filepath))
         {
             const char *error = "ERROR: File not found or inaccessible\n";
             write(client_fd, error, strlen(error));
@@ -532,74 +531,122 @@ void *handle_client_request(void *arg)
             return NULL;
         }
 
-        // Read entire file into memory for parsing
-        fseek(f, 0, SEEK_END);
-        long file_size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        char *content = malloc(file_size + 1);
-        if (!content)
-        {
-            fclose(f);
-            const char *error = "ERROR: Memory allocation failed\n";
-            write(client_fd, error, strlen(error));
-            log_message(ss_logger, LOG_ERROR, "Memory allocation failed for streaming");
-            close(client_fd);
-            return NULL;
-        }
-
-        fread(content, 1, file_size, f);
-        content[file_size] = '\0';
-        fclose(f);
-
-        // Stream word by word with 0.1 second delay
-        char word[256];
-        int word_idx = 0;
         int total_words = 0;
+        int iteration = 0;
+        FileStructure *last_snapshot = NULL;
 
-        for (long i = 0; i <= file_size; i++)
+        // Stream with live updates: reload file snapshots periodically
+        while (1)
         {
-            char c = (i < file_size) ? content[i] : '\0';
-
-            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0')
+            // Wait briefly if this is a reload check (allow active writes to complete)
+            if (iteration > 0)
             {
-                if (word_idx > 0)
-                {
-                    word[word_idx] = '\0';
+                usleep(300000); // 0.3 seconds between snapshot checks
+            }
 
-                    // Send word followed by space
-                    if (write(client_fd, word, word_idx) < 0 ||
+            // Check if file is being actively written to
+            int file_locked = is_file_locked(file_ops_ctx, filename);
+            if (file_locked && iteration > 0)
+            {
+                // File is being written; wait for write to complete before taking snapshot
+                iteration++;
+                if (iteration > 100) // Safety: don't wait forever
+                {
+                    break;
+                }
+                continue;
+            }
+
+            // Load clean snapshot of current file state
+            FileStructure *current_snapshot = load_and_parse_file(filepath);
+            if (!current_snapshot)
+            {
+                log_message(ss_logger, LOG_WARN, "File vanished or corrupted during streaming: %s", filepath);
+                if (last_snapshot)
+                {
+                    destroy_file_structure(last_snapshot);
+                }
+                break;
+            }
+
+            // Determine starting point (stream new content only on reloads)
+            int start_sentence = 0;
+            if (last_snapshot)
+            {
+                start_sentence = last_snapshot->sentence_count;
+                // If no new sentences, we're done
+                if (current_snapshot->sentence_count <= start_sentence)
+                {
+                    destroy_file_structure(current_snapshot);
+                    break;
+                }
+            }
+
+            // Stream sentences from start_sentence onwards
+            for (int s = start_sentence; s < current_snapshot->sentence_count; s++)
+            {
+                SentenceNode *sentence = get_sentence(current_snapshot, s);
+                if (!sentence)
+                    continue;
+
+                WordNode *word_node = sentence->words;
+                while (word_node)
+                {
+                    if (write(client_fd, word_node->word, strlen(word_node->word)) < 0 ||
                         write(client_fd, " ", 1) < 0)
                     {
                         log_message(ss_logger, LOG_WARN, "Client disconnected during streaming");
-                        free(content);
+                        destroy_file_structure(current_snapshot);
+                        if (last_snapshot)
+                        {
+                            destroy_file_structure(last_snapshot);
+                        }
                         close(client_fd);
                         return NULL;
                     }
 
                     total_words++;
-                    word_idx = 0;
+                    word_node = word_node->next;
 
                     // 0.1 second delay (100,000 microseconds)
                     usleep(100000);
                 }
 
-                // Preserve newlines
-                if (c == '\n')
+                // Add delimiter if present
+                if (sentence->delimiter != '\0')
                 {
-                    write(client_fd, "\n", 1);
+                    char delim[2] = {sentence->delimiter, ' '};
+                    write(client_fd, delim, 2);
                 }
             }
-            else
+
+            // Clean up previous snapshot and save current
+            if (last_snapshot)
             {
-                if (word_idx < sizeof(word) - 1)
-                {
-                    word[word_idx++] = c;
-                }
+                destroy_file_structure(last_snapshot);
+            }
+            last_snapshot = current_snapshot;
+            iteration++;
+
+            // Check if this is the initial stream (no previous snapshot)
+            // If so, we've streamed the initial content; wait for updates
+            if (iteration == 1)
+            {
+                // Initial stream complete, now wait for new content
+                continue;
             }
         }
 
-        free(content);
+        // Clean up final snapshot
+        if (last_snapshot)
+        {
+            destroy_file_structure(last_snapshot);
+        }
+
+        // Send END_STREAM signal to indicate successful completion
+        const char *end_signal = "END_STREAM\n";
+        write(client_fd, end_signal, strlen(end_signal));
+
         log_message(ss_logger, LOG_INFO, "Streamed %d words from file '%s' to client",
                     total_words, filename);
     }

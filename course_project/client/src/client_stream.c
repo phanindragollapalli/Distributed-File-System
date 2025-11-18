@@ -117,16 +117,24 @@ int handle_stream_command(const char *filename, const char *username)
         word_count++;
     }
 
-    if (bytes < 0)
+    if (bytes == 0)
+    {
+        printf("\n\n✗ Error: Storage Server disconnected unexpectedly during streaming\n");
+        close(ss_fd);
+        return -1;
+    }
+    else if (bytes < 0)
     {
         if (errno == ECONNRESET || errno == EPIPE)
         {
-            printf("\n\n[Storage Server disconnected]\n");
+            printf("\n\n✗ Error: Storage Server disconnected unexpectedly during streaming\n");
         }
         else
         {
-            perror("Error receiving data");
+            printf("\n\n✗ Error receiving data from Storage Server\n");
         }
+        close(ss_fd);
+        return -1;
     }
 
     printf("\n--- End of Stream ---\n");
