@@ -11,10 +11,13 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include "../../common/include/protocol.h"
 #include "../include/ss_network.h"
 #include "../include/ss_registration.h"
@@ -27,6 +30,18 @@
 Logger *ss_logger = NULL;
 static char storage_dir[256] = "";
 static FileOperationContext *file_ops_ctx = NULL;
+static volatile sig_atomic_t shutdown_requested = 0;
+static int client_server_fd_global = -1;
+static int ns_fd_global = -1;
+
+static void sigint_handler(int sig)
+{
+    (void)sig; // Unused parameter
+    shutdown_requested = 1;
+
+    // Write newline for cleaner terminal output
+    write(STDOUT_FILENO, "\n", 1);
+}
 
 static int directory_exists(const char *path)
 {
@@ -437,6 +452,44 @@ void *handle_client_request(void *arg)
         close(client_fd);
         return NULL;
     }
+    else if (strcmp(cmd, "UNDO") == 0)
+    {
+        if (parsed < 2)
+        {
+            const char *error = "ERROR: UNDO requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
+        log_message(ss_logger, LOG_INFO, "Client UNDO request for file: %s", filename);
+
+        if (!file_ops_ctx)
+        {
+            const char *error = "ERROR: File operations not initialized\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_ERROR, "UNDO failed: file_ops_ctx is NULL");
+            close(client_fd);
+            return NULL;
+        }
+
+        // Call undo_file from file_operations.c
+        int result = undo_file(file_ops_ctx, filename, "client");
+        if (result == SUCCESS)
+        {
+            const char *ack = "ACK UNDO_SUCCESS\n";
+            write(client_fd, ack, strlen(ack));
+            log_message(ss_logger, LOG_INFO, "Successfully undone changes to file: %s", filename);
+
+            // Notify NS about metadata update after undo
+            notify_ns_metadata_update(file_ops_ctx, filename);
+        }
+        else
+        {
+            const char *error = "ERROR: Failed to undo changes\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_ERROR, "Failed to undo file: %s (code=%d)", filename, result);
+        }
+    }
     else if (strcmp(cmd, "STREAM") == 0)
     {
         if (parsed < 2)
@@ -543,6 +596,9 @@ void *handle_client_request(void *arg)
 
 int main()
 {
+    // Set up signal handler for graceful shutdown (Ctrl+C)
+    signal(SIGINT, sigint_handler);
+
     // Initialize logger
     ss_logger = logger_init("logs/ss.log", "StorageServer", LOG_DEBUG, 1);
     if (!ss_logger)
@@ -581,6 +637,9 @@ int main()
     }
 
     log_connection(ss_logger, "CONNECTED", "127.0.0.1", NS_PORT);
+
+    // Store NS FD globally for cleanup
+    ns_fd_global = ns_fd;
 
     // Prepare client listener before registration so advertised port is reachable
     int client_server_fd = -1;
@@ -632,19 +691,56 @@ int main()
 
     log_message(ss_logger, LOG_INFO, "NS handler thread started");
 
+    // Store client server FD globally for cleanup
+    client_server_fd_global = client_server_fd;
+
     log_message(ss_logger, LOG_INFO, "Storage Server ready on port %d (clients), handling requests",
                 client_port);
     printf("Storage Server listening on port %d for client connections\n", client_port);
 
     // Main loop: Accept and handle client connections
-    while (1)
+    while (!shutdown_requested)
     {
+        // Use select() with timeout to allow periodic checking of shutdown_requested
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(client_server_fd, &read_fds);
+
+        struct timeval timeout;
+        timeout.tv_sec = 1; // 1 second timeout
+        timeout.tv_usec = 0;
+
+        int select_result = select(client_server_fd + 1, &read_fds, NULL, NULL, &timeout);
+
+        if (select_result < 0)
+        {
+            if (errno == EINTR)
+            {
+                // Interrupted by signal, check shutdown flag
+                continue;
+            }
+            log_message(ss_logger, LOG_ERROR, "select() failed: %s", strerror(errno));
+            break;
+        }
+
+        if (select_result == 0)
+        {
+            // Timeout, loop back to check shutdown_requested
+            continue;
+        }
+
+        // Socket is ready, accept connection
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
 
         int client_fd = accept(client_server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0)
         {
+            if (errno == EINTR || shutdown_requested)
+            {
+                // Interrupted by signal or shutting down
+                break;
+            }
             log_message(ss_logger, LOG_ERROR, "Failed to accept client connection");
             continue;
         }
@@ -668,8 +764,33 @@ int main()
         }
     }
 
-    // Cleanup (unreachable in current design)
-    close(client_server_fd);
+    // Graceful cleanup on shutdown
+    // printf("\nShutting down Storage Server gracefully...\n");
+    log_message(ss_logger, LOG_INFO, "Shutdown signal received, cleaning up");
+
+    // Close sockets
+    if (client_server_fd_global >= 0)
+    {
+        close(client_server_fd_global);
+        log_message(ss_logger, LOG_INFO, "Closed client listener socket");
+    }
+
+    if (ns_fd_global >= 0)
+    {
+        close(ns_fd_global);
+        log_message(ss_logger, LOG_INFO, "Closed NS connection");
+    }
+
+    // Cleanup file operations context
+    if (file_ops_ctx)
+    {
+        cleanup_file_operations(file_ops_ctx);
+        log_message(ss_logger, LOG_INFO, "Cleaned up file operations context");
+    }
+
+    log_message(ss_logger, LOG_INFO, "Storage Server shutdown complete");
     logger_close(ss_logger);
+
+    printf("Storage Server exited cleanly.\n");
     return 0;
 }

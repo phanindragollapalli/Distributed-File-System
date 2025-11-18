@@ -208,20 +208,21 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
     int ss_id;
     int found_in_cache = lru_get(filename, &ss_id);
 
-    // 2. If not in cache, search Trie
+    // 2. Always verify file exists in Trie (even if cached) to catch deleted files
+    if (!trie_search(global_file_trie, filename, &ss_id))
+    {
+        log_message(global_logger, LOG_WARN, "File not found: %s", filename);
+        send_error_to_client(client_fd, "File not found");
+        return;
+    }
+
+    // 3. If not previously cached, add to cache for future requests
     if (!found_in_cache)
     {
-        if (!trie_search(global_file_trie, filename, &ss_id))
-        {
-            log_message(global_logger, LOG_WARN, "File not found: %s", filename);
-            send_error_to_client(client_fd, "File not found");
-            return;
-        }
-        // Add to cache for future requests
         lru_put(filename, ss_id);
     }
 
-    // 3. Check ACL permissions (user must have READ access)
+    // 4. Check ACL permissions (user must have READ access)
     if (!acl_can_read(filename, username))
     {
         log_message(global_logger, LOG_WARN, "Permission denied: user='%s', file='%s'", username, filename);
@@ -229,7 +230,7 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
         return;
     }
 
-    // 4. Get Storage Server info
+    // 5. Get Storage Server info
     StorageServerInfo *ss_info = get_ss_by_id(ss_id);
     if (!ss_info)
     {
@@ -238,7 +239,7 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
         return;
     }
 
-    // 5. Send SS info to client
+    // 6. Send SS info to client
     send_ss_info_to_client(client_fd, ss_info);
 }
 
@@ -875,6 +876,42 @@ void *handle_client(void *arg)
     else if (strcmp(cmd, "STREAM") == 0 && parsed >= 3)
     {
         handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
+    }
+    // Handle UNDO command - arg1=filename, arg2=username
+    else if (strcmp(cmd, "UNDO") == 0 && parsed >= 3)
+    {
+        log_message(global_logger, LOG_INFO, "UNDO request: file='%s', user='%s'", arg1, arg2);
+
+        // Check if file exists
+        int ss_id;
+        if (!trie_search(global_file_trie, arg1, &ss_id))
+        {
+            log_message(global_logger, LOG_WARN, "File not found: %s", arg1);
+            send_error_to_client(conn_fd, "File not found");
+        }
+        else
+        {
+            // Check if user has WRITE permission (need write access to undo)
+            if (!acl_can_write(arg1, arg2))
+            {
+                log_message(global_logger, LOG_WARN, "UNDO denied: user='%s', file='%s'", arg2, arg1);
+                send_error_to_client(conn_fd, "Permission denied. You need WRITE access to undo changes");
+            }
+            else
+            {
+                // Return SS info for direct connection
+                StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+                if (!ss_info)
+                {
+                    log_message(global_logger, LOG_ERROR, "SS_ID=%d not found", ss_id);
+                    send_error_to_client(conn_fd, "Storage Server not available");
+                }
+                else
+                {
+                    send_ss_info_to_client(conn_fd, ss_info);
+                }
+            }
+        }
     }
     // Handle UPDATE_METADATA command - arg1=filename, arg2=size
     else if (strcmp(cmd, "UPDATE_METADATA") == 0 && parsed >= 3)

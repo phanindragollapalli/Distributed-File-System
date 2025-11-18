@@ -49,20 +49,20 @@ int handle_create_command(const char *filename, const char *username)
     printf("Creating file: %s\n", filename);
 
     // Connect to Name Server
-    printf("DEBUG: Connecting to NS at 127.0.0.1:%d\n", NS_PORT);
+    // printf("DEBUG: Connecting to NS at 127.0.0.1:%d\n", NS_PORT);
     int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
         return -1;
     }
-    printf("DEBUG: Connected to NS, fd=%d\n", ns_fd);
+    // printf("DEBUG: Connected to NS, fd=%d\n", ns_fd);
 
     // Send CREATE request with username
     // Format: "CREATE <filename> <username>\n"
     char request[512];
     snprintf(request, sizeof(request), "CREATE %s %s\n", filename, username);
-    printf("DEBUG: Sending: %s", request);
+    // printf("DEBUG: Sending: %s", request);
 
     if (send_to_ns(ns_fd, request) < 0)
     {
@@ -70,12 +70,12 @@ int handle_create_command(const char *filename, const char *username)
         close(ns_fd);
         return -1;
     }
-    printf("DEBUG: Request sent, waiting for response...\n");
+    // printf("DEBUG: Request sent, waiting for response...\n");
 
     // Receive response from NS
     char response[1024];
     int bytes_received = recv_from_ns(ns_fd, response, sizeof(response));
-    printf("DEBUG: Received %d bytes: %s\n", bytes_received, bytes_received > 0 ? response : "(none)");
+    // printf("DEBUG: Received %d bytes: %s\n", bytes_received, bytes_received > 0 ? response : "(none)");
 
     if (bytes_received <= 0)
     {
@@ -625,7 +625,7 @@ int handle_undo_command(const char *filename, const char *username)
         return -1;
     }
 
-    // Send UNDO request with username
+    // Send UNDO request with username for ACL check
     // Format: "UNDO <filename> <username>\n"
     char request[512];
     snprintf(request, sizeof(request), "UNDO %s %s\n", filename, username);
@@ -648,23 +648,77 @@ int handle_undo_command(const char *filename, const char *username)
         return -1;
     }
 
-    // Check response: "ACK <message>" or "ERROR <message>"
-    if (strncmp(response, "ACK", 3) == 0)
+    // Parse response: "SS_INFO <ip> <port>" or "ERROR <message>"
+    if (strncmp(response, "ERROR", 5) == 0)
     {
-        printf("Success: Last change to '%s' has been reverted\n", filename);
+        printf("%s\n", response + 7);
         close(ns_fd);
+        return -1;
+    }
+
+    char ss_ip[32];
+    int ss_port;
+    if (sscanf(response, "SS_INFO %31s %d", ss_ip, &ss_port) != 2)
+    {
+        printf("Error: Invalid response from Name Server\n");
+        close(ns_fd);
+        return -1;
+    }
+
+    close(ns_fd);
+
+    // Connect to Storage Server
+    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (ss_fd < 0)
+    {
+        perror("Error creating socket for Storage Server");
+        return -1;
+    }
+
+    struct sockaddr_in ss_addr;
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(ss_port);
+    inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr);
+
+    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
+    {
+        perror("Error connecting to Storage Server");
+        close(ss_fd);
+        return -1;
+    }
+
+    // Request UNDO operation from Storage Server
+    char ss_request[512];
+    snprintf(ss_request, sizeof(ss_request), "UNDO %s\n", filename);
+    send(ss_fd, ss_request, strlen(ss_request), 0);
+
+    // Receive response from Storage Server
+    char ss_response[512];
+    int n = recv(ss_fd, ss_response, sizeof(ss_response) - 1, 0);
+    close(ss_fd);
+
+    if (n <= 0)
+    {
+        printf("Error: No response from Storage Server\n");
+        return -1;
+    }
+
+    ss_response[n] = '\0';
+
+    // Check response: "ACK UNDO_SUCCESS" or "ERROR <message>"
+    if (strncmp(ss_response, "ACK", 3) == 0)
+    {
+        printf("✓ Successfully undone last change to '%s'\n", filename);
         return 0;
     }
-    else if (strncmp(response, "ERROR", 5) == 0)
+    else if (strncmp(ss_response, "ERROR", 5) == 0)
     {
-        printf("Error: %s\n", response + 7);
-        close(ns_fd);
+        printf("Error: %s\n", ss_response + 7);
         return -1;
     }
     else
     {
-        printf("Error: Unexpected response from Name Server\n");
-        close(ns_fd);
+        printf("Error: Unexpected response from Storage Server\n");
         return -1;
     }
 }

@@ -77,11 +77,32 @@ int get_client_count()
 
 int list_registered_users(char users[][32], int max_users)
 {
-    int count = (client_count < max_users) ? client_count : max_users;
-    for (int i = 0; i < count; ++i)
+    int unique_count = 0;
+
+    // Deduplicate usernames
+    for (int i = 0; i < client_count && unique_count < max_users; ++i)
     {
-        strncpy(users[i], client_list[i].username, 32);
-        users[i][31] = '\0';
+        const char *current_username = client_list[i].username;
+
+        // Check if this username already exists in the output list
+        int already_added = 0;
+        for (int j = 0; j < unique_count; ++j)
+        {
+            if (strcmp(users[j], current_username) == 0)
+            {
+                already_added = 1;
+                break;
+            }
+        }
+
+        // Only add if it's a new unique username
+        if (!already_added)
+        {
+            strncpy(users[unique_count], current_username, 32);
+            users[unique_count][31] = '\0';
+            unique_count++;
+        }
     }
-    return count;
+
+    return unique_count;
 }
