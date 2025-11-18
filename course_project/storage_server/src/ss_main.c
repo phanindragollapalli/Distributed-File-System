@@ -181,7 +181,27 @@ static void handle_write_session(int client_fd, const char *filename, int senten
         {
             error_code = ERR_GENERAL;
         }
-        send_error_response(client_fd, error_code);
+
+        // Provide helpful error message for delimiter issue
+        if (error_code == ERR_SENTENCE_OUT_OF_RANGE && sentence_index > 0)
+        {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "ERROR Cannot create sentence %d. Previous sentence needs a delimiter (. ! or ?). Write to sentence %d to add one.\n",
+                     sentence_index, sentence_index - 1);
+            write(client_fd, msg, strlen(msg));
+        }
+        else if (error_code == ERR_FILE_LOCKED)
+        {
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "ERROR Write denied: sentence %d of '%s' is currently being edited by another user. Please try again later.\n",
+                     sentence_index, filename);
+            write(client_fd, msg, strlen(msg));
+        }
+        else
+        {
+            send_error_response(client_fd, error_code);
+        }
         log_message(ss_logger, LOG_WARN, "BEGIN_WRITE failed for file '%s' (user=%s)", filename, username);
         return;
     }

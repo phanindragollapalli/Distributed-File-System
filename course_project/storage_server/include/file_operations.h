@@ -9,6 +9,14 @@
 // Forward declaration
 typedef struct WriteContext WriteContext;
 
+// Track active sentence locks (file + sentence index)
+typedef struct SentenceLockEntry
+{
+    char filepath[MAX_PATH_LEN];
+    int sentence_index;
+    char username[MAX_USERNAME_LEN];
+} SentenceLockEntry;
+
 // File operations context
 typedef struct FileOperationContext
 {
@@ -22,6 +30,9 @@ typedef struct FileOperationContext
     WriteContext **active_writes; // Track active write operations
     int active_write_count;
     pthread_mutex_t active_writes_lock;
+    SentenceLockEntry *sentence_locks; // Track sentence-level locks globally
+    int sentence_lock_count;
+    pthread_mutex_t sentence_locks_lock;
 } FileOperationContext;
 
 // Write operation context
@@ -33,6 +44,7 @@ struct WriteContext
     char filepath[MAX_PATH_LEN]; // Store filepath for tracking
     char backup_path[MAX_PATH_LEN];
     int has_backup;
+    int sentences_modified; // Number of contiguous sentences touched by this write
 };
 
 // Initialize file operations
@@ -60,6 +72,12 @@ int write_word(WriteContext *wctx, int word_index, const char *content);
 int commit_write(FileOperationContext *ctx, WriteContext *wctx, const char *filepath);
 void rollback_write(FileOperationContext *ctx, WriteContext *wctx, const char *filepath);
 void cleanup_write_context(WriteContext *wctx);
+
+// Sentence lock helpers
+int reserve_sentence_lock(FileOperationContext *ctx, const char *filepath,
+                          int sentence_index, const char *username);
+void release_sentence_lock(FileOperationContext *ctx, const char *filepath,
+                           int sentence_index, const char *username);
 
 // DELETE operation (for later)
 int delete_file(FileOperationContext *ctx, const char *filepath, const char *username);

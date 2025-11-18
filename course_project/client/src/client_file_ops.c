@@ -447,9 +447,24 @@ int handle_write_command(const char *filename, int sentence_index, const char *u
     // Wait for ACK
     char ack[256];
     int n = recv(ss_fd, ack, sizeof(ack) - 1, 0);
-    if (n <= 0 || strncmp(ack, "ACK", 3) != 0)
+    if (n <= 0)
     {
-        printf("Error: Failed to begin write operation\n");
+        printf("Error: Failed to begin write operation (connection closed)\n");
+        close(ss_fd);
+        return -1;
+    }
+
+    ack[n] = '\0';
+    if (strncmp(ack, "ACK", 3) != 0)
+    {
+        if (strncmp(ack, "ERROR", 5) == 0)
+        {
+            printf("%s", ack);
+        }
+        else
+        {
+            printf("Error: Unexpected response from Storage Server: %s\n", ack);
+        }
         close(ss_fd);
         return -1;
     }

@@ -125,6 +125,187 @@ int delete_backup(const char *backup_path)
     return SUCCESS;
 }
 
+// Helper to safely release a reserved sentence-level lock when unwinding
+static void release_reserved_sentence_lock(FileOperationContext *ctx, const char *filepath,
+                                           int sentence_index, const char *username, int *lock_reserved)
+{
+    if (!lock_reserved || !(*lock_reserved))
+    {
+        return;
+    }
+
+    release_sentence_lock(ctx, filepath, sentence_index, username);
+    *lock_reserved = 0;
+}
+
+// Helper to destroy a linked list of sentences (including words)
+static void destroy_sentence_chain(SentenceNode *head)
+{
+    while (head)
+    {
+        SentenceNode *next = head->next;
+        head->next = NULL;
+        destroy_sentence_node(head);
+        head = next;
+    }
+}
+
+// Clone a contiguous range of sentences from the write context
+static SentenceNode *clone_updated_sentences(WriteContext *wctx, int sentence_count)
+{
+    if (!wctx || !wctx->file || sentence_count <= 0)
+    {
+        return NULL;
+    }
+
+    SentenceNode *current = wctx->file->sentences;
+    int index = 0;
+    while (current && index < wctx->sentence_index)
+    {
+        current = current->next;
+        index++;
+    }
+
+    if (!current)
+    {
+        return NULL;
+    }
+
+    SentenceNode *head = NULL;
+    SentenceNode *tail = NULL;
+    int copied = 0;
+
+    while (current && copied < sentence_count)
+    {
+        SentenceNode *copy = create_sentence_node(current->sentence_id);
+        if (!copy)
+        {
+            destroy_sentence_chain(head);
+            return NULL;
+        }
+
+        copy->delimiter = current->delimiter;
+
+        WordNode *word = current->words;
+        while (word)
+        {
+            if (add_word_to_sentence(copy, word->word) != SUCCESS)
+            {
+                destroy_sentence_chain(copy);
+                destroy_sentence_chain(head);
+                return NULL;
+            }
+            word = word->next;
+        }
+
+        if (!head)
+        {
+            head = copy;
+        }
+        else
+        {
+            tail->next = copy;
+        }
+        tail = copy;
+
+        current = current->next;
+        copied++;
+    }
+
+    if (copied < sentence_count)
+    {
+        destroy_sentence_chain(head);
+        return NULL;
+    }
+
+    return head;
+}
+
+// Recompute sentence IDs & count after modifications
+static void reindex_sentences_local(FileStructure *file)
+{
+    if (!file)
+        return;
+
+    SentenceNode *current = file->sentences;
+    int idx = 0;
+    while (current)
+    {
+        current->sentence_id = idx++;
+        current = current->next;
+    }
+    file->sentence_count = idx;
+}
+
+// Apply the updated sentences from the write context onto the latest file snapshot
+static int apply_updated_sentences(FileStructure *target_file, WriteContext *wctx)
+{
+    if (!target_file || !wctx)
+    {
+        return ERR_NULL_POINTER;
+    }
+
+    int replace_count = (wctx->sentences_modified > 0) ? wctx->sentences_modified : 1;
+    SentenceNode *replacement = clone_updated_sentences(wctx, replace_count);
+    if (!replacement)
+    {
+        return ERR_GENERAL;
+    }
+
+    SentenceNode *replacement_tail = replacement;
+    while (replacement_tail && replacement_tail->next)
+    {
+        replacement_tail = replacement_tail->next;
+    }
+
+    SentenceNode *prev = NULL;
+    SentenceNode *current = target_file->sentences;
+    int index = 0;
+    while (current && index < wctx->sentence_index)
+    {
+        prev = current;
+        current = current->next;
+        index++;
+    }
+
+    if (!current && index < wctx->sentence_index)
+    {
+        log_message(ss_logger, LOG_ERROR,
+                    "Target file shorter than expected while applying write to sentence %d",
+                    wctx->sentence_index);
+        destroy_sentence_chain(replacement);
+        return ERR_GENERAL;
+    }
+
+    SentenceNode *after = current;
+    int removed = 0;
+    while (current && removed < replace_count)
+    {
+        SentenceNode *next = current->next;
+        destroy_sentence_node(current);
+        current = next;
+        removed++;
+    }
+    after = current;
+
+    if (prev)
+    {
+        prev->next = replacement;
+    }
+    else
+    {
+        target_file->sentences = replacement;
+    }
+
+    if (replacement_tail)
+    {
+        replacement_tail->next = after;
+    }
+
+    reindex_sentences_local(target_file);
+    return SUCCESS;
+}
+
 // Begin write operation
 WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int sentence_index, const char *username, int *error_code)
 {
@@ -163,11 +344,24 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
         return NULL;
     }
 
+    int lock_reserved = 0;
+    int reservation_result = reserve_sentence_lock(ctx, filepath, sentence_index, username);
+    if (reservation_result != SUCCESS)
+    {
+        log_message(ss_logger, LOG_WARN, "Sentence %d in %s is locked; denying write for %s",
+                    sentence_index, filepath, username);
+        if (error_code)
+            *error_code = reservation_result;
+        return NULL;
+    }
+    lock_reserved = 1;
+
     // Create write context
     WriteContext *wctx = (WriteContext *)malloc(sizeof(WriteContext));
     if (!wctx)
     {
         log_message(ss_logger, LOG_ERROR, "Failed to allocate write context");
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_MEMORY;
         return NULL;
@@ -175,6 +369,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
 
     // Create backup
     wctx->has_backup = 0;
+    wctx->sentences_modified = 1;
     if (create_backup(full_path, wctx->backup_path) != SUCCESS)
     {
         log_message(ss_logger, LOG_WARN, "Failed to create backup, continuing without backup");
@@ -194,6 +389,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             delete_backup(wctx->backup_path);
         }
         free(wctx);
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_FILE_READ;
         return NULL;
@@ -209,6 +405,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             delete_backup(wctx->backup_path);
         }
         free(wctx);
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_SENTENCE_OUT_OF_RANGE;
         return NULL;
@@ -224,6 +421,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             delete_backup(wctx->backup_path);
         }
         free(wctx);
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_SENTENCE_OUT_OF_RANGE;
         return NULL;
@@ -244,6 +442,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
                     delete_backup(wctx->backup_path);
                 }
                 free(wctx);
+                release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
                 if (error_code)
                     *error_code = ERR_GENERAL;
                 return NULL;
@@ -252,13 +451,15 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             // Previous sentence must have a delimiter to create a new sentence
             if (prev_sentence->delimiter == '\0')
             {
-                log_message(ss_logger, LOG_WARN, "Cannot create sentence %d: previous sentence has no delimiter", sentence_index);
+                log_message(ss_logger, LOG_WARN, "Cannot create sentence %d: previous sentence %d has no delimiter (add a delimiter like . ! or ? first)",
+                            sentence_index, sentence_index - 1);
                 destroy_file_structure(wctx->file);
                 if (wctx->has_backup)
                 {
                     delete_backup(wctx->backup_path);
                 }
                 free(wctx);
+                release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
                 if (error_code)
                     *error_code = ERR_SENTENCE_OUT_OF_RANGE;
                 return NULL;
@@ -276,6 +477,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
                 delete_backup(wctx->backup_path);
             }
             free(wctx);
+            release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
             if (error_code)
                 *error_code = ERR_MEMORY;
             return NULL;
@@ -291,6 +493,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
                 delete_backup(wctx->backup_path);
             }
             free(wctx);
+            release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
             if (error_code)
                 *error_code = ERR_GENERAL;
             return NULL;
@@ -314,6 +517,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             delete_backup(wctx->backup_path);
         }
         free(wctx);
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_GENERAL;
         return NULL;
@@ -329,6 +533,7 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
             delete_backup(wctx->backup_path);
         }
         free(wctx);
+        release_reserved_sentence_lock(ctx, filepath, sentence_index, username, &lock_reserved);
         if (error_code)
             *error_code = ERR_FILE_LOCKED;
         return NULL;
@@ -477,6 +682,8 @@ int write_word(WriteContext *wctx, int word_index, const char *content)
                 return ERR_MEMORY;
             }
 
+            wctx->sentences_modified++;
+
             // Move words after split point to new sentence
             if (split_point)
             {
@@ -576,24 +783,45 @@ int commit_write(FileOperationContext *ctx, WriteContext *wctx, const char *file
         return ERR_INVALID_FORMAT;
     }
 
+    // Load latest file snapshot (used for undo + merge)
+    FileStructure *latest_file = NULL;
+    if (file_exists(full_path))
+    {
+        latest_file = load_and_parse_file(full_path);
+        if (!latest_file)
+        {
+            log_message(ss_logger, LOG_WARN, "Failed to load latest snapshot for %s; falling back to legacy commit path",
+                        filepath);
+        }
+    }
+
     // Get undo manager
     UndoManager *undo_mgr = get_undo_manager(ctx, filepath);
 
-    // Save undo state BEFORE committing write
-    if (undo_mgr && file_exists(full_path))
+    // Save undo state BEFORE committing write using the latest snapshot if available
+    if (undo_mgr && latest_file)
     {
-        // Load current file state
-        FileStructure *current_file = load_and_parse_file(full_path);
-        if (current_file)
+        save_undo_state(undo_mgr, latest_file, wctx->username);
+    }
+
+    FileStructure *file_to_save = wctx->file;
+    if (latest_file)
+    {
+        int merge_result = apply_updated_sentences(latest_file, wctx);
+        if (merge_result == SUCCESS)
         {
-            save_undo_state(undo_mgr, current_file, wctx->username);
-            destroy_file_structure(current_file);
+            file_to_save = latest_file;
+        }
+        else
+        {
+            log_message(ss_logger, LOG_WARN,
+                        "Concurrent merge failed for %s; defaulting to write context snapshot",
+                        filepath);
         }
     }
 
     // Save file to disk BEFORE releasing lock (prevents race condition)
-    // This ensures no other thread can load and modify the file while we're saving
-    int result = save_file_to_disk(wctx->file, full_path);
+    int result = save_file_to_disk(file_to_save, full_path);
 
     // Deregister from active writes tracking (after save, before lock release)
     pthread_mutex_lock(&ctx->active_writes_lock);
@@ -617,6 +845,17 @@ int commit_write(FileOperationContext *ctx, WriteContext *wctx, const char *file
     if (sentence)
     {
         release_sentence_write_lock(sentence);
+    }
+
+    const char *lock_path = (wctx->filepath[0] != '\0') ? wctx->filepath : filepath;
+    if (lock_path && lock_path[0] != '\0')
+    {
+        release_sentence_lock(ctx, lock_path, wctx->sentence_index, wctx->username);
+    }
+
+    if (latest_file)
+    {
+        destroy_file_structure(latest_file);
     }
 
     // Check save result after releasing lock
@@ -684,6 +923,15 @@ void rollback_write(FileOperationContext *ctx, WriteContext *wctx, const char *f
         if (sentence)
         {
             release_sentence_write_lock(sentence);
+        }
+    }
+
+    if (ctx)
+    {
+        const char *lock_path = (wctx->filepath[0] != '\0') ? wctx->filepath : filepath;
+        if (lock_path && lock_path[0] != '\0')
+        {
+            release_sentence_lock(ctx, lock_path, wctx->sentence_index, wctx->username);
         }
     }
 
@@ -961,6 +1209,105 @@ int is_file_locked(FileOperationContext *ctx, const char *filepath)
     return is_locked;
 }
 
+// Reserve a sentence-level lock before starting heavy write work
+int reserve_sentence_lock(FileOperationContext *ctx, const char *filepath,
+                          int sentence_index, const char *username)
+{
+    if (!ctx || !filepath || !username)
+    {
+        return ERR_INVALID_ARGS;
+    }
+
+    char full_path[MAX_PATH_LEN];
+    if (get_full_path(ctx, filepath, full_path) != SUCCESS)
+    {
+        return ERR_INVALID_FORMAT;
+    }
+
+    pthread_mutex_lock(&ctx->sentence_locks_lock);
+
+    for (int i = 0; i < ctx->sentence_lock_count; i++)
+    {
+        SentenceLockEntry *entry = &ctx->sentence_locks[i];
+        if (strcmp(entry->filepath, full_path) == 0 && entry->sentence_index == sentence_index)
+        {
+            if (strcmp(entry->username, username) != 0)
+            {
+                pthread_mutex_unlock(&ctx->sentence_locks_lock);
+                return ERR_FILE_LOCKED;
+            }
+            else
+            {
+                // Same user already has a pending lock - disallow nested writes
+                pthread_mutex_unlock(&ctx->sentence_locks_lock);
+                return ERR_FILE_LOCKED;
+            }
+        }
+    }
+
+    SentenceLockEntry *new_entries = realloc(ctx->sentence_locks,
+                                             (ctx->sentence_lock_count + 1) * sizeof(SentenceLockEntry));
+    if (!new_entries)
+    {
+        pthread_mutex_unlock(&ctx->sentence_locks_lock);
+        return ERR_MEMORY;
+    }
+
+    ctx->sentence_locks = new_entries;
+    SentenceLockEntry *entry = &ctx->sentence_locks[ctx->sentence_lock_count];
+    strncpy(entry->filepath, full_path, MAX_PATH_LEN - 1);
+    entry->filepath[MAX_PATH_LEN - 1] = '\0';
+    entry->sentence_index = sentence_index;
+    strncpy(entry->username, username, MAX_USERNAME_LEN - 1);
+    entry->username[MAX_USERNAME_LEN - 1] = '\0';
+    ctx->sentence_lock_count++;
+
+    pthread_mutex_unlock(&ctx->sentence_locks_lock);
+
+    log_message(ss_logger, LOG_DEBUG, "Reserved lock for %s sentence %d by %s",
+                filepath, sentence_index, username);
+    return SUCCESS;
+}
+
+// Release a previously reserved sentence-level lock
+void release_sentence_lock(FileOperationContext *ctx, const char *filepath,
+                           int sentence_index, const char *username)
+{
+    if (!ctx || !filepath || !username)
+    {
+        return;
+    }
+
+    char full_path[MAX_PATH_LEN];
+    if (get_full_path(ctx, filepath, full_path) != SUCCESS)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&ctx->sentence_locks_lock);
+
+    for (int i = 0; i < ctx->sentence_lock_count; i++)
+    {
+        SentenceLockEntry *entry = &ctx->sentence_locks[i];
+        if (strcmp(entry->filepath, full_path) == 0 &&
+            entry->sentence_index == sentence_index &&
+            strcmp(entry->username, username) == 0)
+        {
+            for (int j = i; j < ctx->sentence_lock_count - 1; j++)
+            {
+                ctx->sentence_locks[j] = ctx->sentence_locks[j + 1];
+            }
+            ctx->sentence_lock_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&ctx->sentence_locks_lock);
+
+    log_message(ss_logger, LOG_DEBUG, "Released lock for %s sentence %d by %s",
+                filepath, sentence_index, username);
+}
+
 // Initialize file operations context
 FileOperationContext *init_file_operations(const char *storage_path, int ss_id,
                                            const char *ns_ip, int ns_port)
@@ -1015,6 +1362,18 @@ FileOperationContext *init_file_operations(const char *storage_path, int ss_id,
         return NULL;
     }
 
+    // Initialize sentence lock tracking
+    ctx->sentence_locks = NULL;
+    ctx->sentence_lock_count = 0;
+    if (pthread_mutex_init(&ctx->sentence_locks_lock, NULL) != 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to initialize sentence locks mutex");
+        pthread_mutex_destroy(&ctx->active_writes_lock);
+        pthread_mutex_destroy(&ctx->undo_managers_lock);
+        free(ctx);
+        return NULL;
+    }
+
     log_message(ss_logger, LOG_INFO, "File operations initialized with storage path: %s", storage_path);
     return ctx;
 }
@@ -1046,6 +1405,15 @@ void cleanup_file_operations(FileOperationContext *ctx)
     }
     pthread_mutex_unlock(&ctx->active_writes_lock);
     pthread_mutex_destroy(&ctx->active_writes_lock);
+
+    // Clean up sentence lock tracking
+    pthread_mutex_lock(&ctx->sentence_locks_lock);
+    if (ctx->sentence_locks)
+    {
+        free(ctx->sentence_locks);
+    }
+    pthread_mutex_unlock(&ctx->sentence_locks_lock);
+    pthread_mutex_destroy(&ctx->sentence_locks_lock);
 
     log_message(ss_logger, LOG_INFO, "Cleaning up file operations context");
     free(ctx);
