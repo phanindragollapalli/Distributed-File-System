@@ -1,20 +1,25 @@
 /* ACCESS CONTROL COMMANDS
- * GRANT and REVOKE commands for managing file permissions
+ * ADDACCESS and REMACCESS commands for managing file permissions
  *
- * GRANT <filename> <username> READ|WRITE
- *   - Gives the specified user read or write access to the file
- *   - Only the file owner can grant permissions
+ * ADDACCESS -R <filename> <username>
+ *   - Gives the specified user read access to the file
+ *   - Only the file owner can add access
  *   - Communicates with Name Server ACL module (ns_acl.c)
  *
- * REVOKE <filename> <username> READ|WRITE
- *   - Removes the specified user's access from the file
- *   - Only the file owner can revoke permissions
+ * ADDACCESS -W <filename> <username>
+ *   - Gives the specified user write (and read) access to the file
+ *   - Only the file owner can add access
+ *   - Communicates with Name Server ACL module (ns_acl.c)
+ *
+ * REMACCESS <filename> <username>
+ *   - Removes all access from the specified user
+ *   - Only the file owner can remove access
  *   - Communicates with Name Server ACL module (ns_acl.c)
  *
  * Process:
- * 1. Parse command to extract filename, target username, and permission type
+ * 1. Parse command to extract filename, target username, and flag/permission
  * 2. Connect to Name Server
- * 3. Send GRANT/REVOKE request with requester's username (for owner verification)
+ * 3. Send ADDACCESS/REMACCESS request with requester's username (for owner verification)
  * 4. NS ACL module verifies requester is file owner
  * 5. NS ACL module updates permissions in ACL database
  * 6. Display success/error message to user
@@ -27,32 +32,35 @@
 #include <string.h>
 #include <unistd.h>
 
-/* GRANT COMMAND - Give user access to file
- * Syntax: GRANT <filename> <username> READ|WRITE
+/* ADDACCESS COMMAND - Give user access to file
+ * Syntax: ADDACCESS -R <filename> <username> OR ADDACCESS -W <filename> <username>
  * Returns: 0 on success, -1 on failure
  */
 int handle_grant_command(const char *command, const char *username)
 {
+    char flag[16];
     char filename[256];
     char target_user[64];
-    char permission[16];
 
-    // Parse command: "GRANT <filename> <target_user> <permission>"
-    if (sscanf(command, "GRANT %255s %63s %15s", filename, target_user, permission) != 3)
+    // Parse command: "ADDACCESS -R/-W <filename> <target_user>"
+    if (sscanf(command, "ADDACCESS %15s %255s %63s", flag, filename, target_user) != 3)
     {
-        printf("Error: Invalid GRANT command format\n");
-        printf("Usage: GRANT <filename> <username> READ|WRITE\n");
+        printf("Error: Invalid ADDACCESS command format\n");
+        printf("Usage: ADDACCESS -R <filename> <username> OR ADDACCESS -W <filename> <username>\n");
         return -1;
     }
 
-    // Validate permission type
-    if (strcmp(permission, "READ") != 0 && strcmp(permission, "WRITE") != 0)
+    // Validate flag
+    if (strcmp(flag, "-R") != 0 && strcmp(flag, "-W") != 0)
     {
-        printf("Error: Permission must be READ or WRITE\n");
+        printf("Error: Flag must be -R (read) or -W (write)\n");
         return -1;
     }
 
-    printf("Granting %s permission on '%s' to user '%s'\n",
+    // Determine permission type from flag
+    const char *permission = (strcmp(flag, "-R") == 0) ? "READ" : "WRITE";
+
+    printf("Adding %s access on '%s' to user '%s'\n",
            permission, filename, target_user);
 
     // Connect to Name Server
@@ -63,15 +71,15 @@ int handle_grant_command(const char *command, const char *username)
         return -1;
     }
 
-    // Send GRANT request
-    // Format: "GRANT <filename> <requester_username> <target_user> <permission>"
+    // Send ADDACCESS request
+    // Format: "ADDACCESS <filename> <requester_username> <target_user> <permission>"
     char request[512];
-    snprintf(request, sizeof(request), "GRANT %s %s %s %s\n",
+    snprintf(request, sizeof(request), "ADDACCESS %s %s %s %s\n",
              filename, username, target_user, permission);
 
     if (send_to_ns(ns_fd, request) < 0)
     {
-        printf("Error: Failed to send GRANT request\n");
+        printf("Error: Failed to send ADDACCESS request\n");
         close(ns_fd);
         return -1;
     }
@@ -90,8 +98,7 @@ int handle_grant_command(const char *command, const char *username)
     // Parse response: "SUCCESS" or "ERROR <message>"
     if (strncmp(response, "SUCCESS", 7) == 0)
     {
-        printf("Success: %s permission granted to '%s' on file '%s'\n",
-               permission, target_user, filename);
+        printf("Access granted successfully!\n");
     }
     else if (strncmp(response, "ERROR", 5) == 0)
     {
@@ -110,33 +117,25 @@ int handle_grant_command(const char *command, const char *username)
     return 0;
 }
 
-/* REVOKE COMMAND - Remove user access from file
- * Syntax: REVOKE <filename> <username> READ|WRITE
+/* REMACCESS COMMAND - Remove all user access from file
+ * Syntax: REMACCESS <filename> <username>
  * Returns: 0 on success, -1 on failure
  */
 int handle_revoke_command(const char *command, const char *username)
 {
     char filename[256];
     char target_user[64];
-    char permission[16];
 
-    // Parse command: "REVOKE <filename> <target_user> <permission>"
-    if (sscanf(command, "REVOKE %255s %63s %15s", filename, target_user, permission) != 3)
+    // Parse command: "REMACCESS <filename> <target_user>"
+    if (sscanf(command, "REMACCESS %255s %63s", filename, target_user) != 2)
     {
-        printf("Error: Invalid REVOKE command format\n");
-        printf("Usage: REVOKE <filename> <username> READ|WRITE\n");
+        printf("Error: Invalid REMACCESS command format\n");
+        printf("Usage: REMACCESS <filename> <username>\n");
         return -1;
     }
 
-    // Validate permission type
-    if (strcmp(permission, "READ") != 0 && strcmp(permission, "WRITE") != 0)
-    {
-        printf("Error: Permission must be READ or WRITE\n");
-        return -1;
-    }
-
-    printf("Revoking %s permission on '%s' from user '%s'\n",
-           permission, filename, target_user);
+    printf("Removing access on '%s' from user '%s'\n",
+           filename, target_user);
 
     // Connect to Name Server
     int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
@@ -146,15 +145,15 @@ int handle_revoke_command(const char *command, const char *username)
         return -1;
     }
 
-    // Send REVOKE request
-    // Format: "REVOKE <filename> <requester_username> <target_user> <permission>"
+    // Send REMACCESS request
+    // Format: "REMACCESS <filename> <requester_username> <target_user>"
     char request[512];
-    snprintf(request, sizeof(request), "REVOKE %s %s %s %s\n",
-             filename, username, target_user, permission);
+    snprintf(request, sizeof(request), "REMACCESS %s %s %s\n",
+             filename, username, target_user);
 
     if (send_to_ns(ns_fd, request) < 0)
     {
-        printf("Error: Failed to send REVOKE request\n");
+        printf("Error: Failed to send REMACCESS request\n");
         close(ns_fd);
         return -1;
     }
@@ -173,8 +172,7 @@ int handle_revoke_command(const char *command, const char *username)
     // Parse response: "SUCCESS" or "ERROR <message>"
     if (strncmp(response, "SUCCESS", 7) == 0)
     {
-        printf("Success: %s permission revoked from '%s' on file '%s'\n",
-               permission, target_user, filename);
+        printf("Access removed successfully!\n");
     }
     else if (strncmp(response, "ERROR", 5) == 0)
     {

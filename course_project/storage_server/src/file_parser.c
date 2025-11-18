@@ -155,8 +155,8 @@ int parse_line(FileStructure *file, const char *line)
     // Add last sentence if it has words (incomplete sentence without delimiter)
     if (current_sentence->word_count > 0)
     {
-        // No delimiter at end - use default period
-        current_sentence->delimiter = '.';
+        // No delimiter at end - use '\0' to indicate no delimiter
+        current_sentence->delimiter = '\0';
         if (add_sentence(file, current_sentence) != SUCCESS)
         {
             destroy_sentence_node(current_sentence);
@@ -240,8 +240,8 @@ char *sentence_to_string(SentenceNode *sentence)
         current = current->next;
     }
 
-    // Add delimiter
-    if (offset < MAX_SENTENCE_LEN - 1)
+    // Add delimiter only if it's a valid delimiter character
+    if (offset < MAX_SENTENCE_LEN - 1 && sentence->delimiter != '\0')
     {
         buffer[offset++] = sentence->delimiter;
     }

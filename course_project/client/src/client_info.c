@@ -59,7 +59,7 @@ int handle_info_command(const char *filename, const char *username)
     }
 
     // Parse and display file metadata
-    // Expected format: "FILE_INFO\nfilename\nowner\nsize\ncreated\nmodified\nlast_accessed\npermissions\nss_id"
+    // Expected format: "FILE_INFO\nfilename\nowner\nsize\ncreated\nmodified\nlast_accessed\npermissions\nss_id\nall_perms"
     if (strncmp(response, "FILE_INFO", 9) == 0)
     {
         char file_name[256];
@@ -68,12 +68,13 @@ int handle_info_command(const char *filename, const char *username)
         long created, modified, accessed;
         char permissions[32];
         int ss_id;
+        char all_perms[1024] = "";
 
         // Parse the response line by line
         char *line = strtok(response + 10, "\n"); // Skip "FILE_INFO\n"
         int field = 0;
 
-        while (line != NULL && field < 8)
+        while (line != NULL && field < 9)
         {
             switch (field)
             {
@@ -101,6 +102,9 @@ int handle_info_command(const char *filename, const char *username)
             case 7:
                 ss_id = atoi(line);
                 break;
+            case 8:
+                strncpy(all_perms, line, sizeof(all_perms) - 1);
+                break;
             }
             field++;
             line = strtok(NULL, "\n");
@@ -111,7 +115,8 @@ int handle_info_command(const char *filename, const char *username)
         printf("Filename:       %s\n", file_name);
         printf("Owner:          %s\n", owner);
         printf("Size:           %ld bytes (%.2f KB)\n", size, size / 1024.0);
-        printf("Permissions:    %s\n", permissions);
+        printf("Your Access:    %s\n", permissions);
+        printf("All Access:     %s\n", all_perms);
         printf("Storage Server: SS_%d\n", ss_id);
 
         // Format timestamps

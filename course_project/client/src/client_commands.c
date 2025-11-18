@@ -49,12 +49,12 @@ int execute_command(const char *command, const char *username)
             return -1;
         }
     }
-    // Person 1 Commands - Days 10-11: GRANT, REVOKE
-    else if (strcmp(cmd, "GRANT") == 0)
+    // Person 1 Commands - Days 10-11: ADDACCESS, REMACCESS
+    else if (strcmp(cmd, "ADDACCESS") == 0)
     {
         return handle_grant_command(command, username);
     }
-    else if (strcmp(cmd, "REVOKE") == 0)
+    else if (strcmp(cmd, "REMACCESS") == 0)
     {
         return handle_revoke_command(command, username);
     }
@@ -151,8 +151,9 @@ int execute_command(const char *command, const char *username)
         printf("  LIST                         - List all users\n");
         printf("  READ <filename>              - Display file contents\n");
         printf("  INFO <filename>              - Show file metadata\n");
-        printf("  GRANT <file> <user> READ|WRITE  - Grant permissions\n");
-        printf("  REVOKE <file> <user> READ|WRITE - Revoke permissions\n");
+        printf("  ADDACCESS -R <file> <user>     - Grant read access\n");
+        printf("  ADDACCESS -W <file> <user>     - Grant write access\n");
+        printf("  REMACCESS <file> <user>        - Remove all access\n");
         printf("  EXEC <filename>              - Execute script file\n");
         printf("  CREATE <filename>            - Create new file\n");
         printf("  DELETE <filename>            - Delete file\n");

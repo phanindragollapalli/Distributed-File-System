@@ -410,43 +410,67 @@ void handle_info_request(int client_fd, const char *filename, const char *userna
         return;
     }
 
-    // 4. Build permissions string
-    char perms[32] = "";
+    // 4. Build permissions string for current user
+    char user_perms[32] = "";
     int has_read = acl_can_read(filename, username);
     int has_write = acl_can_write(filename, username);
     if (has_read && has_write)
-        strcpy(perms, "READ,WRITE");
+        strcpy(user_perms, "READ,WRITE");
     else if (has_read)
-        strcpy(perms, "READ");
+        strcpy(user_perms, "READ");
     else if (has_write)
-        strcpy(perms, "WRITE");
+        strcpy(user_perms, "WRITE");
 
-    // 5. Send metadata to client (format: FILE_INFO\nfield1\nfield2\n...)
+    // 5. Get all users' permissions from ACL
+    FileACL *acl = acl_get(filename);
+    char all_perms[1024] = "";
+    if (acl)
+    {
+        for (int i = 0; i < acl->entry_count; i++)
+        {
+            char entry[128];
+            const char *rights_str = "";
+            if ((acl->entries[i].rights & ACCESS_READ) && (acl->entries[i].rights & ACCESS_WRITE))
+                rights_str = "RW";
+            else if (acl->entries[i].rights & ACCESS_WRITE)
+                rights_str = "W";
+            else if (acl->entries[i].rights & ACCESS_READ)
+                rights_str = "R";
+
+            snprintf(entry, sizeof(entry), "%s(%s)", acl->entries[i].username, rights_str);
+            if (i > 0)
+                strcat(all_perms, ",");
+            strcat(all_perms, entry);
+        }
+    }
+
+    // 6. Send metadata to client (format: FILE_INFO\nfield1\nfield2\n...)
     char response[2048];
     snprintf(response, sizeof(response),
-             "FILE_INFO\n%s\n%s\n%ld\n%ld\n%ld\n%ld\n%s\n%d\n",
+             "FILE_INFO\n%s\n%s\n%ld\n%ld\n%ld\n%ld\n%s\n%d\n%s\n",
              metadata->filename,
              metadata->owner,
              (long)metadata->size,
              (long)metadata->created,
              (long)metadata->modified,
              (long)metadata->last_accessed,
-             perms,
-             metadata->storage_server_id);
+             user_perms,
+             metadata->storage_server_id,
+             all_perms);
 
     write(client_fd, response, strlen(response));
     log_message(global_logger, LOG_INFO, "INFO: Sent metadata for file='%s' to user='%s'",
                 filename, username);
 }
 
-/* Handle GRANT command - Person 1, Day 10-11
+/* Handle ADDACCESS command - Person 1, Day 10-11
  * File owner grants READ or WRITE permission to another user
  * Process: Check ownership → Call ACL grant → Return success/error
  */
 void handle_grant_request(int client_fd, const char *filename, const char *requester,
                           const char *target_user, const char *permission)
 {
-    log_message(global_logger, LOG_INFO, "GRANT request: file='%s', requester='%s', target='%s', perm='%s'",
+    log_message(global_logger, LOG_INFO, "ADDACCESS request: file='%s', requester='%s', target='%s', perm='%s'",
                 filename, requester, target_user, permission);
 
     // 1. Check if file exists
@@ -468,7 +492,7 @@ void handle_grant_request(int client_fd, const char *filename, const char *reque
     // 3. Verify requester is the file owner
     if (strcmp(metadata->owner, requester) != 0)
     {
-        log_message(global_logger, LOG_WARN, "GRANT denied: user='%s' is not owner of '%s'",
+        log_message(global_logger, LOG_WARN, "ADDACCESS denied: user='%s' is not owner of '%s'",
                     requester, filename);
         send_error_to_client(client_fd, "Only the file owner can grant permissions");
         return;
@@ -495,7 +519,7 @@ void handle_grant_request(int client_fd, const char *filename, const char *reque
     {
         const char *ack = "SUCCESS\n";
         write(client_fd, ack, strlen(ack));
-        log_message(global_logger, LOG_INFO, "GRANT successful: '%s' permission on '%s' to '%s'",
+        log_message(global_logger, LOG_INFO, "ADDACCESS successful: '%s' permission on '%s' to '%s'",
                     permission, filename, target_user);
     }
     else
@@ -504,15 +528,15 @@ void handle_grant_request(int client_fd, const char *filename, const char *reque
     }
 }
 
-/* Handle REVOKE command - Person 1, Day 10-11
- * File owner revokes READ or WRITE permission from a user
- * Process: Check ownership → Call ACL revoke → Return success/error
+/* Handle REMACCESS command - Person 1, Day 10-11
+ * File owner removes all access from a user
+ * Process: Check ownership → Call ACL remove → Return success/error
  */
 void handle_revoke_request(int client_fd, const char *filename, const char *requester,
                            const char *target_user, const char *permission)
 {
-    log_message(global_logger, LOG_INFO, "REVOKE request: file='%s', requester='%s', target='%s', perm='%s'",
-                filename, requester, target_user, permission);
+    log_message(global_logger, LOG_INFO, "REMACCESS request: file='%s', requester='%s', target='%s'",
+                filename, requester, target_user);
 
     // 1. Check if file exists
     int ss_id;
@@ -533,13 +557,13 @@ void handle_revoke_request(int client_fd, const char *filename, const char *requ
     // 3. Verify requester is the file owner
     if (strcmp(metadata->owner, requester) != 0)
     {
-        log_message(global_logger, LOG_WARN, "REVOKE denied: user='%s' is not owner of '%s'",
+        log_message(global_logger, LOG_WARN, "REMACCESS denied: user='%s' is not owner of '%s'",
                     requester, filename);
-        send_error_to_client(client_fd, "Only the file owner can revoke permissions");
+        send_error_to_client(client_fd, "Only the file owner can remove permissions");
         return;
     }
 
-    // 4. Revoke permission via ACL
+    // 4. Remove all access via ACL (removes both READ and WRITE)
     bool success = acl_remove_access(filename, target_user);
 
     // 5. Send response
@@ -547,12 +571,12 @@ void handle_revoke_request(int client_fd, const char *filename, const char *requ
     {
         const char *ack = "SUCCESS\n";
         write(client_fd, ack, strlen(ack));
-        log_message(global_logger, LOG_INFO, "REVOKE successful: '%s' permission on '%s' from '%s'",
-                    permission, filename, target_user);
+        log_message(global_logger, LOG_INFO, "REMACCESS successful: removed all access on '%s' from '%s'",
+                    filename, target_user);
     }
     else
     {
-        send_error_to_client(client_fd, "Failed to revoke permission");
+        send_error_to_client(client_fd, "Failed to remove access");
     }
 }
 
@@ -828,15 +852,15 @@ void *handle_client(void *arg)
     {
         handle_info_request(conn_fd, arg1, arg2);
     }
-    // Handle GRANT command - arg1=filename, arg2=requester, arg3=target_user, arg4=permission
-    else if (strcmp(cmd, "GRANT") == 0 && parsed >= 5)
+    // Handle ADDACCESS command - arg1=filename, arg2=requester, arg3=target_user, arg4=permission
+    else if (strcmp(cmd, "ADDACCESS") == 0 && parsed >= 5)
     {
         handle_grant_request(conn_fd, arg1, arg2, arg3, arg4);
     }
-    // Handle REVOKE command - arg1=filename, arg2=requester, arg3=target_user, arg4=permission
-    else if (strcmp(cmd, "REVOKE") == 0 && parsed >= 5)
+    // Handle REMACCESS command - arg1=filename, arg2=requester, arg3=target_user
+    else if (strcmp(cmd, "REMACCESS") == 0 && parsed >= 4)
     {
-        handle_revoke_request(conn_fd, arg1, arg2, arg3, arg4);
+        handle_revoke_request(conn_fd, arg1, arg2, arg3, NULL);
     }
     // Handle EXEC command - arg1=filename, arg2=username
     else if (strcmp(cmd, "EXEC") == 0 && parsed >= 3)

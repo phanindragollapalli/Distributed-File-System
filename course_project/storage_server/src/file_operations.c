@@ -231,6 +231,40 @@ WriteContext *begin_write(FileOperationContext *ctx, const char *filepath, int s
 
     if (sentence_index == wctx->file->sentence_count)
     {
+        // Check if previous sentence has a delimiter (except for first sentence in empty file)
+        if (sentence_index > 0)
+        {
+            SentenceNode *prev_sentence = get_sentence(wctx->file, sentence_index - 1);
+            if (!prev_sentence)
+            {
+                log_message(ss_logger, LOG_ERROR, "Failed to get previous sentence %d", sentence_index - 1);
+                destroy_file_structure(wctx->file);
+                if (wctx->has_backup)
+                {
+                    delete_backup(wctx->backup_path);
+                }
+                free(wctx);
+                if (error_code)
+                    *error_code = ERR_GENERAL;
+                return NULL;
+            }
+
+            // Previous sentence must have a delimiter to create a new sentence
+            if (prev_sentence->delimiter == '\0')
+            {
+                log_message(ss_logger, LOG_WARN, "Cannot create sentence %d: previous sentence has no delimiter", sentence_index);
+                destroy_file_structure(wctx->file);
+                if (wctx->has_backup)
+                {
+                    delete_backup(wctx->backup_path);
+                }
+                free(wctx);
+                if (error_code)
+                    *error_code = ERR_SENTENCE_OUT_OF_RANGE;
+                return NULL;
+            }
+        }
+
         // Append a new empty sentence to support writing to empty files or new sentences
         SentenceNode *new_sentence = create_sentence_node(sentence_index);
         if (!new_sentence)
@@ -382,7 +416,8 @@ int write_word(WriteContext *wctx, int word_index, const char *content)
     else
     {
         // Content has delimiter - need to split sentence
-        // Insert word before delimiter
+        // Insert word before delimiter (if any text before delimiter)
+        int actual_insert_pos = word_index;
         if (delimiter_pos > 0)
         {
             if (delimiter_pos >= MAX_WORD_LEN)
@@ -400,52 +435,104 @@ int write_word(WriteContext *wctx, int word_index, const char *content)
                 log_message(ss_logger, LOG_ERROR, "Failed to insert word before delimiter");
                 return result;
             }
+            actual_insert_pos = word_index + 1; // Move split point after inserted word
         }
 
-        // Set delimiter for current sentence
-        sentence->delimiter = delimiter;
+        // Check if there are words after the insertion point OR content after delimiter
+        WordNode *split_point = sentence->words;
+        WordNode *prev = NULL;
 
-        // Process remaining content after delimiter (may have more delimiters)
+        // Navigate to the split point
+        for (int i = 0; i < actual_insert_pos && split_point; i++)
+        {
+            prev = split_point;
+            split_point = split_point->next;
+        }
+
+        // Check if there's remaining content after delimiter in the input
+        const char *remaining = NULL;
+        int has_remaining_content = 0;
         if (delimiter_pos + 1 < strlen(content))
         {
-            const char *remaining = content + delimiter_pos + 1;
-
+            remaining = content + delimiter_pos + 1;
             // Skip leading spaces
             while (*remaining && isspace(*remaining))
             {
                 remaining++;
             }
-
             if (strlen(remaining) > 0)
             {
-                // Create new sentence for remaining content
-                SentenceNode *new_sentence = create_sentence_node(wctx->file->sentence_count);
-                if (!new_sentence)
+                has_remaining_content = 1;
+            }
+        }
+
+        // Only create a new sentence if there are words to move OR content after delimiter
+        if (split_point || has_remaining_content)
+        {
+            // Create new sentence for words after delimiter (and any remaining content)
+            SentenceNode *new_sentence = create_sentence_node(wctx->file->sentence_count);
+            if (!new_sentence)
+            {
+                log_message(ss_logger, LOG_ERROR, "Failed to create new sentence");
+                return ERR_MEMORY;
+            }
+
+            // Move words after split point to new sentence
+            if (split_point)
+            {
+                new_sentence->words = split_point;
+                if (prev)
                 {
-                    log_message(ss_logger, LOG_ERROR, "Failed to create new sentence");
-                    return ERR_MEMORY;
+                    prev->next = NULL; // Cut the current sentence
+                }
+                else
+                {
+                    sentence->words = NULL; // Current sentence becomes empty
                 }
 
-                // Insert new sentence after current one
-                new_sentence->next = sentence->next;
-                sentence->next = new_sentence;
-                wctx->file->sentence_count++;
-
-                // Re-index all sentences from the insertion point
-                int new_id = wctx->sentence_index;
-                SentenceNode *current = sentence;
-                while (current)
+                // Count words in new sentence
+                WordNode *counter = new_sentence->words;
+                while (counter)
                 {
-                    current->sentence_id = new_id++;
-                    current = current->next;
+                    new_sentence->word_count++;
+                    counter = counter->next;
                 }
 
-                log_message(ss_logger, LOG_INFO, "Created new sentence after delimiter at index %d",
-                            wctx->sentence_index);
+                // Update current sentence word count
+                sentence->word_count = 0;
+                counter = sentence->words;
+                while (counter)
+                {
+                    sentence->word_count++;
+                    counter = counter->next;
+                }
+            }
 
-                // Recursively process remaining content (handles multiple delimiters)
-                // We need to process on the NEW sentence we just created
-                WriteContext recursive_ctx = *wctx;                      // Copy context
+            // Set delimiter for current sentence
+            sentence->delimiter = delimiter;
+
+            // Insert new sentence after current one
+            new_sentence->next = sentence->next;
+            sentence->next = new_sentence;
+            wctx->file->sentence_count++;
+
+            // Re-index all sentences from the insertion point
+            int new_id = wctx->sentence_index;
+            SentenceNode *current = sentence;
+            while (current)
+            {
+                current->sentence_id = new_id++;
+                current = current->next;
+            }
+
+            log_message(ss_logger, LOG_INFO, "Split sentence at index %d with delimiter '%c'",
+                        wctx->sentence_index, delimiter);
+
+            // Process remaining content after delimiter (if any in the input)
+            if (has_remaining_content)
+            {
+                // Recursively process remaining content into the new sentence
+                WriteContext recursive_ctx = *wctx;
                 recursive_ctx.sentence_index = wctx->sentence_index + 1; // Point to new sentence
 
                 int result = write_word(&recursive_ctx, 0, remaining); // Insert at beginning of new sentence
@@ -459,6 +546,14 @@ int write_word(WriteContext *wctx, int word_index, const char *content)
                     return result;
                 }
             }
+        }
+        else
+        {
+            // No words after insertion point and no remaining content
+            // Just set the delimiter for current sentence
+            sentence->delimiter = delimiter;
+            log_message(ss_logger, LOG_INFO, "Set delimiter '%c' for sentence %d (no split needed)",
+                        delimiter, wctx->sentence_index);
         }
     }
 

@@ -80,7 +80,7 @@ SentenceNode *create_sentence_node(int sentence_id)
 
     sentence->words = NULL;
     sentence->word_count = 0;
-    sentence->delimiter = '.'; // Default delimiter
+    sentence->delimiter = '\0'; // No delimiter by default
     sentence->next = NULL;
     sentence->sentence_id = sentence_id;
 
