@@ -612,11 +612,12 @@ void *handle_client_request(void *arg)
                     usleep(100000);
                 }
 
-                // Add delimiter if present
+                // Add delimiter if present (no space before punctuation)
                 if (sentence->delimiter != '\0')
                 {
-                    char delim[2] = {sentence->delimiter, ' '};
-                    write(client_fd, delim, 2);
+                    char delim[2] = {sentence->delimiter, '\0'};
+                    write(client_fd, delim, 1);
+                    write(client_fd, " ", 1); // Space after delimiter
                 }
             }
 

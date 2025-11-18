@@ -114,9 +114,9 @@ int handle_exec_command(const char *command, const char *username)
             total_bytes += n;
         }
 
-        // If we received less than buffer size, we're done
-        if (n < sizeof(buffer) - 1)
-            break;
+        // Continue reading until recv returns 0 (connection closed) or error
+        // Don't break based on received size, as recv can return less than buffer size
+        // even when more data is available
     }
 
     printf("\n--- End of Output ---\n");

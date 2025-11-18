@@ -112,9 +112,33 @@ int handle_stream_command(const char *filename, const char *username)
             break;
         }
 
-        printf("%s ", buffer);
+        // Print received data without adding extra space (server already sends spaces)
+        printf("%s", buffer);
         fflush(stdout);
-        word_count++;
+
+        // Count actual words in this buffer (space-separated tokens)
+        // Don't count punctuation marks as words
+        char *token = strtok(buffer, " \t\n");
+        while (token != NULL)
+        {
+            // Only count as word if it's not just punctuation
+            int is_punctuation = 1;
+            for (int i = 0; token[i] != '\0'; i++)
+            {
+                if (token[i] != '.' && token[i] != ',' && token[i] != '!' &&
+                    token[i] != '?' && token[i] != ';' && token[i] != ':')
+                {
+                    is_punctuation = 0;
+                    break;
+                }
+            }
+
+            if (!is_punctuation)
+            {
+                word_count++;
+            }
+            token = strtok(NULL, " \t\n");
+        }
     }
 
     if (bytes == 0)

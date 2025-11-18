@@ -117,6 +117,10 @@ int ss_handle_ns_command(int ns_fd, const char *storage_dir)
 
         fclose(f);
 
+        // Send EOF marker to indicate end of file
+        const char *eof_marker = "\n<<<EOF>>>\n";
+        write(ns_fd, eof_marker, strlen(eof_marker));
+
         if (ss_logger)
         {
             log_message(ss_logger, LOG_INFO, "GET_FILE: Sent %zu bytes for file: %s",

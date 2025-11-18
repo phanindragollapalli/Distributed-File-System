@@ -227,9 +227,15 @@ char *sentence_to_string(SentenceNode *sentence)
             strcpy(buffer + offset, current->word);
             offset += len;
 
+            // Add space only if there's a next word (not before delimiter)
             if (current->next)
             {
                 buffer[offset++] = ' ';
+            }
+            // If no next word but there's a delimiter, attach it directly
+            else if (sentence->delimiter != '\0' && offset < MAX_SENTENCE_LEN - 1)
+            {
+                buffer[offset++] = sentence->delimiter;
             }
         }
         else
@@ -240,11 +246,7 @@ char *sentence_to_string(SentenceNode *sentence)
         current = current->next;
     }
 
-    // Add delimiter only if it's a valid delimiter character
-    if (offset < MAX_SENTENCE_LEN - 1 && sentence->delimiter != '\0')
-    {
-        buffer[offset++] = sentence->delimiter;
-    }
+    // Delimiter already added in loop above (no need to add again)
 
     buffer[offset] = '\0';
 

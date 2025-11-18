@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -40,26 +41,11 @@ static int get_file_from_ss(StorageServerInfo *ss_info, const char *filename,
     if (!ss_info || !filename || !content || max_size == 0)
         return -1;
 
-    // Connect to Storage Server's NS port (for NS-to-SS communication)
-    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (ss_fd < 0)
-    {
-        log_message(global_logger, LOG_ERROR, "EXEC: Failed to create socket for SS");
-        return -1;
-    }
+    // Use the existing NS-to-SS connection (ns_fd) instead of creating a new connection
+    // Lock to ensure only one command is sent at a time
+    pthread_mutex_lock(&ss_info->command_lock);
 
-    struct sockaddr_in ss_addr;
-    ss_addr.sin_family = AF_INET;
-    ss_addr.sin_port = htons(ss_info->ss_nm_port);
-    inet_pton(AF_INET, ss_info->ss_ip, &ss_addr.sin_addr);
-
-    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
-    {
-        log_message(global_logger, LOG_ERROR, "EXEC: Failed to connect to SS %s:%d",
-                    ss_info->ss_ip, ss_info->ss_nm_port);
-        close(ss_fd);
-        return -1;
-    }
+    int ss_fd = ss_info->ns_fd;
 
     // Send GET_FILE request to SS
     // Format: "GET_FILE <filename>\n"
@@ -69,12 +55,15 @@ static int get_file_from_ss(StorageServerInfo *ss_info, const char *filename,
     if (send(ss_fd, request, strlen(request), 0) < 0)
     {
         log_message(global_logger, LOG_ERROR, "EXEC: Failed to send GET_FILE request");
-        close(ss_fd);
+        pthread_mutex_unlock(&ss_info->command_lock);
         return -1;
     }
 
-    // Receive file content
+    // Receive file content (wait for EOF marker: "\n<<<EOF>>>\n")
     int total_bytes = 0;
+    const char *eof_marker = "\n<<<EOF>>>\n";
+    int eof_marker_len = strlen(eof_marker);
+
     while (total_bytes < max_size - 1)
     {
         int n = recv(ss_fd, content + total_bytes, max_size - total_bytes - 1, 0);
@@ -82,19 +71,30 @@ static int get_file_from_ss(StorageServerInfo *ss_info, const char *filename,
             break;
 
         total_bytes += n;
+        content[total_bytes] = '\0';
 
         // Check for error response
         if (total_bytes > 6 && strncmp(content, "ERROR:", 6) == 0)
         {
-            content[total_bytes] = '\0';
             log_message(global_logger, LOG_ERROR, "EXEC: SS returned error: %s", content + 7);
-            close(ss_fd);
+            pthread_mutex_unlock(&ss_info->command_lock);
             return -1;
+        }
+
+        // Check for EOF marker
+        if (total_bytes >= eof_marker_len)
+        {
+            if (strcmp(content + total_bytes - eof_marker_len, eof_marker) == 0)
+            {
+                // Remove EOF marker from content
+                total_bytes -= eof_marker_len;
+                content[total_bytes] = '\0';
+                break;
+            }
         }
     }
 
-    content[total_bytes] = '\0';
-    close(ss_fd);
+    pthread_mutex_unlock(&ss_info->command_lock);
 
     log_message(global_logger, LOG_INFO, "EXEC: Retrieved %d bytes from SS for file '%s'",
                 total_bytes, filename);
@@ -150,14 +150,28 @@ static int execute_script(const char *file_content, char *output, size_t output_
         return -1;
     }
 
-    // Read output from pipe
+    // Read output from pipe using read() for more reliable large output handling
+    int fd = fileno(pipe);
     size_t bytes_read = 0;
+
     while (bytes_read < output_size - 1)
     {
-        size_t n = fread(output + bytes_read, 1, output_size - bytes_read - 1, pipe);
-        if (n == 0)
+        ssize_t n = read(fd, output + bytes_read, output_size - bytes_read - 1);
+        if (n > 0)
+        {
+            bytes_read += n;
+        }
+        else if (n == 0)
+        {
+            // EOF
             break;
-        bytes_read += n;
+        }
+        else
+        {
+            // Error
+            if (errno != EINTR && errno != EAGAIN)
+                break;
+        }
     }
     output[bytes_read] = '\0';
 
