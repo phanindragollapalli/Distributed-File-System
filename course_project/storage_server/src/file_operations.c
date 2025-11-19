@@ -589,6 +589,45 @@ int write_word(WriteContext *wctx, int word_index, const char *content)
         return ERR_WORD_OUT_OF_RANGE;
     }
 
+    // Check if we are appending to a sentence that already has a delimiter
+    // This enforces the rule that a delimiter ends the sentence.
+    // Any subsequent words must go to a new sentence.
+    if (word_index == sentence->word_count && sentence->delimiter != '\0')
+    {
+        log_message(ss_logger, LOG_INFO, "Appending to delimited sentence %d; creating new sentence", wctx->sentence_index);
+
+        // Create new sentence
+        SentenceNode *new_sentence = create_sentence_node(wctx->file->sentence_count);
+        if (!new_sentence)
+        {
+            log_message(ss_logger, LOG_ERROR, "Failed to create new sentence for append");
+            return ERR_MEMORY;
+        }
+
+        wctx->sentences_modified++;
+
+        // Insert new sentence after current one
+        new_sentence->next = sentence->next;
+        sentence->next = new_sentence;
+        wctx->file->sentence_count++;
+
+        // Re-index all sentences from the insertion point
+        int new_id = wctx->sentence_index + 1;
+        SentenceNode *current = new_sentence;
+        while (current)
+        {
+            current->sentence_id = new_id++;
+            current = current->next;
+        }
+
+        // Recursively write to the new sentence
+        WriteContext recursive_ctx = *wctx;
+        recursive_ctx.sentence_index = wctx->sentence_index + 1;
+        
+        // We are inserting at the beginning of the new sentence
+        return write_word(&recursive_ctx, 0, content);
+    }
+
     // Check if content contains sentence delimiters
     int has_delimiter = 0;
     char delimiter = '.';
