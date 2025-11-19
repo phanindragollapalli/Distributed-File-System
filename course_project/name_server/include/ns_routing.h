@@ -13,4 +13,7 @@ StorageServerInfo *get_ss_for_file(const char *filename);
 // Send storage server info to client
 int send_ss_info_to_client(int client_fd, StorageServerInfo *ss_info);
 
+// Send storage server info along with alternate replicas for the same file
+int send_ss_info_with_fallbacks(int client_fd, StorageServerInfo *primary_ss, const char *filename);
+
 #endif

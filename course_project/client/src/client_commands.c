@@ -148,20 +148,21 @@ int execute_command(const char *command, const char *username)
     {
         printf("Unknown command: %s\n", cmd);
         printf("\nAvailable commands:\n");
-        printf("  VIEW [-a] [-l] [-al]         - List files\n");
-        printf("  LIST                         - List all users\n");
-        printf("  READ <filename>              - Display file contents\n");
-        printf("  INFO <filename>              - Show file metadata\n");
+        printf("  VIEW [-a] [-l] [-al]           - List files\n");
+        printf("  LIST                           - List all users\n");
+        printf("  READ <filename>                - Display file contents\n");
+        printf("  INFO <filename>                - Show file metadata\n");
+        printf("  HELP                           - Show the list of all available commands\n");
         printf("  ADDACCESS -R <file> <user>     - Grant read access\n");
         printf("  ADDACCESS -W <file> <user>     - Grant write access\n");
         printf("  REMACCESS <file> <user>        - Remove all access\n");
-        printf("  EXEC <filename>              - Execute script file\n");
-        printf("  CREATE <filename>            - Create new file\n");
-        printf("  DELETE <filename>            - Delete file\n");
-        printf("  WRITE <file> <sentence_idx>  - Write to file\n");
-        printf("  UNDO <filename>              - Undo last change\n");
-        printf("  STREAM <filename>            - Stream file contents\n");
-        printf("  EXIT                         - Quit client\n");
+        printf("  EXEC <filename>                - Execute script file\n");
+        printf("  CREATE <filename>              - Create new file\n");
+        printf("  DELETE <filename>              - Delete file\n");
+        printf("  WRITE <file> <sentence_idx>    - Write to file\n");
+        printf("  UNDO <filename>                - Undo last change\n");
+        printf("  STREAM <filename>              - Stream file contents\n");
+        printf("  EXIT                           - Quit client\n");
         return -1;
     }
 

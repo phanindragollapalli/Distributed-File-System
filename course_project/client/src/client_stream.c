@@ -12,6 +12,172 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
+typedef struct
+{
+    char ip[32];
+    int port;
+    int ss_id;
+} StreamTarget;
+
+static int is_punctuation_only(const char *token)
+{
+    if (!token || *token == '\0')
+    {
+        return 1;
+    }
+
+    for (int i = 0; token[i] != '\0'; i++)
+    {
+        if (token[i] != '.' && token[i] != ',' && token[i] != '!' &&
+            token[i] != '?' && token[i] != ';' && token[i] != ':')
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int count_words_in_chunk(const char *chunk)
+{
+    if (!chunk)
+    {
+        return 0;
+    }
+
+    char temp[256];
+    strncpy(temp, chunk, sizeof(temp) - 1);
+    temp[sizeof(temp) - 1] = '\0';
+
+    int count = 0;
+    char *token = strtok(temp, " \t\n");
+    while (token)
+    {
+        if (!is_punctuation_only(token))
+        {
+            count++;
+        }
+        token = strtok(NULL, " \t\n");
+    }
+    return count;
+}
+
+static int parse_ss_targets(char *response, StreamTarget *targets, int max_targets)
+{
+    int count = 0;
+    char *saveptr;
+    char *line = strtok_r(response, "\n", &saveptr);
+
+    while (line && count < max_targets)
+    {
+        StreamTarget target = {.port = 0, .ss_id = -1};
+        if (strncmp(line, "SS_INFO", 7) == 0)
+        {
+            if (sscanf(line, "SS_INFO %31s %d %d", target.ip, &target.port, &target.ss_id) < 2)
+            {
+                return 0;
+            }
+        }
+        else if (strncmp(line, "ALT_SS", 6) == 0)
+        {
+            if (sscanf(line, "ALT_SS %31s %d %d", target.ip, &target.port, &target.ss_id) < 2)
+            {
+                line = strtok_r(NULL, "\n", &saveptr);
+                continue;
+            }
+        }
+        else
+        {
+            line = strtok_r(NULL, "\n", &saveptr);
+            continue;
+        }
+
+        if (target.port > 0)
+        {
+            targets[count++] = target;
+        }
+
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    return count;
+}
+
+static int stream_from_target(const StreamTarget *target, const char *filename, int *word_count)
+{
+    if (!target)
+    {
+        return -1;
+    }
+
+    int start_word = *word_count;
+
+    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (ss_fd < 0)
+    {
+        perror("Error creating socket for Storage Server");
+        return 1;
+    }
+
+    struct sockaddr_in ss_addr;
+    ss_addr.sin_family = AF_INET;
+    ss_addr.sin_port = htons(target->port);
+    inet_pton(AF_INET, target->ip, &ss_addr.sin_addr);
+
+    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
+    {
+        perror("Error connecting to Storage Server");
+        close(ss_fd);
+        return 1;
+    }
+
+    char ss_request[512];
+    snprintf(ss_request, sizeof(ss_request), "STREAM %s %d\n", filename, start_word);
+    send(ss_fd, ss_request, strlen(ss_request), 0);
+
+    char buffer[256];
+    int bytes;
+
+    while ((bytes = recv(ss_fd, buffer, sizeof(buffer) - 1, 0)) > 0)
+    {
+        buffer[bytes] = '\0';
+
+        if (*word_count == start_word && strncmp(buffer, "ERROR", 5) == 0)
+        {
+            printf("%s\n", buffer + 7);
+            close(ss_fd);
+            return -1;
+        }
+
+        if (strcmp(buffer, "END_STREAM\n") == 0)
+        {
+            close(ss_fd);
+            return 0;
+        }
+
+        printf("%s", buffer);
+        fflush(stdout);
+
+        *word_count += count_words_in_chunk(buffer);
+    }
+
+    if (bytes == 0)
+    {
+        close(ss_fd);
+        return 1; // Disconnected, try next SS
+    }
+    else
+    {
+        if (errno == ECONNRESET || errno == EPIPE)
+        {
+            close(ss_fd);
+            return 1;
+        }
+        perror("Error receiving data from Storage Server");
+        close(ss_fd);
+        return -1;
+    }
+}
+
 int handle_stream_command(const char *filename, const char *username)
 {
     if (!filename || !username)
@@ -56,114 +222,49 @@ int handle_stream_command(const char *filename, const char *username)
         return -1;
     }
 
-    char ss_ip[32];
-    int ss_port;
-    if (sscanf(response, "SS_INFO %31s %d", ss_ip, &ss_port) != 2)
-    {
-        printf("Error: Invalid response from Name Server\n");
-        close(ns_fd);
-        return -1;
-    }
-
+    StreamTarget targets[16];
+    int target_count = parse_ss_targets(response, targets, 16);
     close(ns_fd);
 
-    int ss_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (ss_fd < 0)
+    if (target_count <= 0)
     {
-        perror("Error creating socket for Storage Server");
+        printf("Error: Invalid response from Name Server\n");
         return -1;
     }
-
-    struct sockaddr_in ss_addr;
-    ss_addr.sin_family = AF_INET;
-    ss_addr.sin_port = htons(ss_port);
-    inet_pton(AF_INET, ss_ip, &ss_addr.sin_addr);
-
-    if (connect(ss_fd, (struct sockaddr *)&ss_addr, sizeof(ss_addr)) < 0)
-    {
-        perror("Error connecting to Storage Server");
-        close(ss_fd);
-        return -1;
-    }
-
-    char ss_request[512];
-    snprintf(ss_request, sizeof(ss_request), "STREAM %s\n", filename);
-    send(ss_fd, ss_request, strlen(ss_request), 0);
 
     printf("\n--- Streaming: %s ---\n", filename);
 
-    char buffer[256];
-    int word_count = 0;
-    int bytes;
+    int total_words = 0;
+    int success = 0;
 
-    while ((bytes = recv(ss_fd, buffer, sizeof(buffer) - 1, 0)) > 0)
+    for (int i = 0; i < target_count; ++i)
     {
-        buffer[bytes] = '\0';
+        int status = stream_from_target(&targets[i], filename, &total_words);
 
-        if (word_count == 0 && strncmp(buffer, "ERROR", 5) == 0)
+        if (status == 0)
         {
-            printf("%s\n", buffer + 7);
-            close(ss_fd);
-            return -1;
-        }
-
-        if (strcmp(buffer, "END_STREAM\n") == 0)
-        {
+            success = 1;
             break;
         }
-
-        // Print received data without adding extra space (server already sends spaces)
-        printf("%s", buffer);
-        fflush(stdout);
-
-        // Count actual words in this buffer (space-separated tokens)
-        // Don't count punctuation marks as words
-        char *token = strtok(buffer, " \t\n");
-        while (token != NULL)
+        else if (status == -1)
         {
-            // Only count as word if it's not just punctuation
-            int is_punctuation = 1;
-            for (int i = 0; token[i] != '\0'; i++)
-            {
-                if (token[i] != '.' && token[i] != ',' && token[i] != '!' &&
-                    token[i] != '?' && token[i] != ';' && token[i] != ':')
-                {
-                    is_punctuation = 0;
-                    break;
-                }
-            }
-
-            if (!is_punctuation)
-            {
-                word_count++;
-            }
-            token = strtok(NULL, " \t\n");
+            return -1;
+        }
+        else if (status == 1)
+        {
+            printf("\n⚠ Storage Server %s:%d disconnected. Trying next replica...\n",
+                   targets[i].ip, targets[i].port);
         }
     }
 
-    if (bytes == 0)
+    if (!success)
     {
-        printf("\n\n✗ Error: Storage Server disconnected unexpectedly during streaming\n");
-        close(ss_fd);
-        return -1;
-    }
-    else if (bytes < 0)
-    {
-        if (errno == ECONNRESET || errno == EPIPE)
-        {
-            printf("\n\n✗ Error: Storage Server disconnected unexpectedly during streaming\n");
-        }
-        else
-        {
-            printf("\n\n✗ Error receiving data from Storage Server\n");
-        }
-        close(ss_fd);
+        printf("\n\n✗ Error: Unable to complete stream from any Storage Server\n");
         return -1;
     }
 
     printf("\n--- End of Stream ---\n");
-    printf("Total words streamed: %d\n", word_count);
+    printf("Total words streamed: %d\n", total_words);
 
-    close(ss_fd);
     return 0;
 }

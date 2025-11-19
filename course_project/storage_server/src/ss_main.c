@@ -512,6 +512,20 @@ void *handle_client_request(void *arg)
     }
     else if (strcmp(cmd, "STREAM") == 0)
     {
+        int resume_from_word = 0;
+        if (sscanf(buffer, "STREAM %255s %d", filename, &resume_from_word) < 1)
+        {
+            const char *error = "ERROR: STREAM requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
+
+        if (resume_from_word < 0)
+        {
+            resume_from_word = 0;
+        }
+
         if (parsed < 2)
         {
             const char *error = "ERROR: STREAM requires filename\n";
@@ -519,7 +533,9 @@ void *handle_client_request(void *arg)
             close(client_fd);
             return NULL;
         }
-        log_message(ss_logger, LOG_INFO, "Client STREAM request for file: %s", filename);
+        log_message(ss_logger, LOG_INFO,
+                    "Client STREAM request for file: %s (resume_from_word=%d)",
+                    filename, resume_from_word);
 
         // Check initial file existence
         if (!file_exists(filepath))
@@ -531,7 +547,8 @@ void *handle_client_request(void *arg)
             return NULL;
         }
 
-        int total_words = 0;
+    int total_words = 0;
+    int global_word_index = 0;
         int iteration = 0;
         FileStructure *last_snapshot = NULL;
 
@@ -592,32 +609,40 @@ void *handle_client_request(void *arg)
                 WordNode *word_node = sentence->words;
                 while (word_node)
                 {
-                    if (write(client_fd, word_node->word, strlen(word_node->word)) < 0 ||
-                        write(client_fd, " ", 1) < 0)
+                    if (global_word_index >= resume_from_word)
                     {
-                        log_message(ss_logger, LOG_WARN, "Client disconnected during streaming");
-                        destroy_file_structure(current_snapshot);
-                        if (last_snapshot)
+                        if (write(client_fd, word_node->word, strlen(word_node->word)) < 0 ||
+                            write(client_fd, " ", 1) < 0)
                         {
-                            destroy_file_structure(last_snapshot);
+                            log_message(ss_logger, LOG_WARN, "Client disconnected during streaming");
+                            destroy_file_structure(current_snapshot);
+                            if (last_snapshot)
+                            {
+                                destroy_file_structure(last_snapshot);
+                            }
+                            close(client_fd);
+                            return NULL;
                         }
-                        close(client_fd);
-                        return NULL;
+
+                        total_words++;
+
+                        // 0.1 second delay (100,000 microseconds)
+                        usleep(100000);
                     }
 
-                    total_words++;
+                    global_word_index++;
                     word_node = word_node->next;
-
-                    // 0.1 second delay (100,000 microseconds)
-                    usleep(100000);
                 }
 
                 // Add delimiter if present (no space before punctuation)
                 if (sentence->delimiter != '\0')
                 {
-                    char delim[2] = {sentence->delimiter, '\0'};
-                    write(client_fd, delim, 1);
-                    write(client_fd, " ", 1); // Space after delimiter
+                    if (global_word_index >= resume_from_word)
+                    {
+                        char delim[2] = {sentence->delimiter, '\0'};
+                        write(client_fd, delim, 1);
+                        write(client_fd, " ", 1); // Space after delimiter
+                    }
                 }
             }
 

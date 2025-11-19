@@ -64,8 +64,8 @@ int send_ss_info_to_client(int client_fd, StorageServerInfo *ss_info)
     }
 
     char response[256];
-    snprintf(response, sizeof(response), "SS_INFO %s %d\n",
-             ss_info->ss_ip, ss_info->ss_client_port);
+    snprintf(response, sizeof(response), "SS_INFO %s %d %d\n",
+             ss_info->ss_ip, ss_info->ss_client_port, ss_info->ss_id);
 
     if (write(client_fd, response, strlen(response)) < 0)
     {
@@ -73,8 +73,67 @@ int send_ss_info_to_client(int client_fd, StorageServerInfo *ss_info)
         return -1;
     }
 
-    log_message(global_logger, LOG_INFO, "Sent SS info to client: %s:%d",
-                ss_info->ss_ip, ss_info->ss_client_port);
+    log_message(global_logger, LOG_INFO, "Sent SS info to client: %s:%d (ID=%d)",
+                ss_info->ss_ip, ss_info->ss_client_port, ss_info->ss_id);
+    return 0;
+}
+
+int send_ss_info_with_fallbacks(int client_fd, StorageServerInfo *primary_ss, const char *filename)
+{
+    if (!primary_ss)
+    {
+        return send_ss_info_to_client(client_fd, NULL);
+    }
+
+    if (!filename)
+    {
+        return send_ss_info_to_client(client_fd, primary_ss);
+    }
+
+    char response[1024];
+    size_t offset = 0;
+
+    offset += snprintf(response + offset, sizeof(response) - offset,
+                       "SS_INFO %s %d %d\n",
+                       primary_ss->ss_ip,
+                       primary_ss->ss_client_port,
+                       primary_ss->ss_id);
+
+    int candidate_ids[16];
+    int count = get_ss_ids_for_file(filename, candidate_ids, 16);
+
+    for (int i = 0; i < count; ++i)
+    {
+        if (candidate_ids[i] == primary_ss->ss_id)
+        {
+            continue;
+        }
+
+        StorageServerInfo *alt = get_ss_by_id(candidate_ids[i]);
+        if (!alt)
+        {
+            continue;
+        }
+
+        offset += snprintf(response + offset, sizeof(response) - offset,
+                           "ALT_SS %s %d %d\n",
+                           alt->ss_ip,
+                           alt->ss_client_port,
+                           alt->ss_id);
+        if (offset >= sizeof(response) - 1)
+        {
+            break;
+        }
+    }
+
+    if (write(client_fd, response, strlen(response)) < 0)
+    {
+        log_message(global_logger, LOG_ERROR, "Failed to send SS fallback list to client");
+        return -1;
+    }
+
+    log_message(global_logger, LOG_INFO,
+                "Sent SS info with %d fallback(s) for file '%s'", count ? count - 1 : 0, filename);
     return 0;
 }
 

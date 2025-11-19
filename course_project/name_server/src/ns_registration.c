@@ -5,7 +5,7 @@
  * Maintains lists of connected Storage Servers and Clients with their metadata.
  */
 
-#include "ns_registration.h"
+#include "../include/ns_registration.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -20,6 +20,7 @@ int register_storage_server(const char *ip, int nm_port, int client_port,
                             const char file_list[][128], int file_count, int ns_fd)
 {
     StorageServerInfo *ss = &ss_list[ss_count];
+    ss->ss_id = ss_count;
     strncpy(ss->ss_ip, ip, 32);
     ss->ss_nm_port = nm_port;
     ss->ss_client_port = client_port;
@@ -73,6 +74,88 @@ int get_ss_count()
 int get_client_count()
 {
     return client_count;
+}
+
+static int file_matches(const char *a, const char *b)
+{
+    return a && b && strncmp(a, b, 128) == 0;
+}
+
+void ns_register_add_file(int ss_id, const char *filename)
+{
+    if (ss_id < 0 || ss_id >= ss_count || !filename)
+    {
+        return;
+    }
+
+    StorageServerInfo *ss = &ss_list[ss_id];
+
+    for (int i = 0; i < ss->file_count; ++i)
+    {
+        if (file_matches(ss->files[i], filename))
+        {
+            return;
+        }
+    }
+
+    if (ss->file_count >= 128)
+    {
+        return;
+    }
+
+    strncpy(ss->files[ss->file_count], filename, 128);
+    ss->files[ss->file_count][127] = '\0';
+    ss->file_count++;
+}
+
+void ns_register_remove_file(int ss_id, const char *filename)
+{
+    if (ss_id < 0 || ss_id >= ss_count || !filename)
+    {
+        return;
+    }
+
+    StorageServerInfo *ss = &ss_list[ss_id];
+
+    for (int i = 0; i < ss->file_count; ++i)
+    {
+        if (file_matches(ss->files[i], filename))
+        {
+            for (int j = i; j < ss->file_count - 1; ++j)
+            {
+                strncpy(ss->files[j], ss->files[j + 1], 128);
+            }
+            if (ss->file_count > 0)
+            {
+                ss->file_count--;
+                ss->files[ss->file_count][0] = '\0';
+            }
+            return;
+        }
+    }
+}
+
+int get_ss_ids_for_file(const char *filename, int *out_ids, int max_ids)
+{
+    if (!filename || !out_ids || max_ids <= 0)
+    {
+        return 0;
+    }
+
+    int count = 0;
+    for (int i = 0; i < ss_count && count < max_ids; ++i)
+    {
+        for (int j = 0; j < ss_list[i].file_count; ++j)
+        {
+            if (file_matches(ss_list[i].files[j], filename))
+            {
+                out_ids[count++] = ss_list[i].ss_id;
+                break;
+            }
+        }
+    }
+
+    return count;
 }
 
 int list_registered_users(char users[][32], int max_users)

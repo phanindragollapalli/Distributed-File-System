@@ -200,7 +200,7 @@ void send_error_to_client(int client_fd, const char *error_msg)
  * Client requests to view a file
  * Process: Check Trie → Check ACL → Return SS info
  */
-void handle_view_request(int client_fd, const char *filename, const char *username)
+void handle_view_request(int client_fd, const char *filename, const char *username, int include_fallbacks)
 {
     log_message(global_logger, LOG_INFO, "VIEW request: file='%s', user='%s'", filename, username);
 
@@ -240,7 +240,14 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
     }
 
     // 6. Send SS info to client
-    send_ss_info_to_client(client_fd, ss_info);
+    if (include_fallbacks)
+    {
+        send_ss_info_with_fallbacks(client_fd, ss_info, filename);
+    }
+    else
+    {
+        send_ss_info_to_client(client_fd, ss_info);
+    }
 
     // 7. Update access time
     update_access_time(filename, username);
@@ -796,7 +803,7 @@ void *handle_client(void *arg)
         if (parsed >= 3 && arg1[0] != '-')
         {
             // Legacy behavior: VIEW <filename> <username>
-            handle_view_request(conn_fd, arg1, arg2);
+            handle_view_request(conn_fd, arg1, arg2, 0);
         }
         else
         {
@@ -884,7 +891,7 @@ void *handle_client(void *arg)
     // Handle READ command - arg1=filename, arg2=username
     else if (strcmp(cmd, "READ") == 0 && parsed >= 3)
     {
-        handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
+    handle_view_request(conn_fd, arg1, arg2, 0); // Same as VIEW - returns SS_INFO
     }
     // Handle WRITE command - arg1=filename, arg2=username, arg3=sentence_index
     else if (strcmp(cmd, "WRITE") == 0 && parsed >= 4)
@@ -914,7 +921,7 @@ void *handle_client(void *arg)
     // Handle STREAM command - arg1=filename, arg2=username
     else if (strcmp(cmd, "STREAM") == 0 && parsed >= 3)
     {
-        handle_view_request(conn_fd, arg1, arg2); // Same as VIEW - returns SS_INFO
+    handle_view_request(conn_fd, arg1, arg2, 1); // STREAM - include fallbacks
     }
     // Handle UNDO command - arg1=filename, arg2=username
     else if (strcmp(cmd, "UNDO") == 0 && parsed >= 3)
@@ -1050,6 +1057,7 @@ void *handle_client(void *arg)
                     // Add to Trie and metadata
                     trie_insert(global_file_trie, arg1, target_ss_id);
                     add_file_metadata(arg1, arg2, target_ss_id);
+                    ns_register_add_file(target_ss_id, arg1);
 
                     // Initialize ACL (owner gets full access)
                     acl_create_file(arg1, arg2);
@@ -1146,6 +1154,7 @@ void *handle_client(void *arg)
                     delete_file_metadata(arg1);
                     acl_delete_file(arg1);
                     trie_remove(global_file_trie, arg1);
+                    ns_register_remove_file(ss_id, arg1);
 
                     const char *ack = "ACK DELETED\n";
                     write(conn_fd, ack, strlen(ack));
