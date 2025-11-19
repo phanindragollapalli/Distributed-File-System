@@ -65,7 +65,8 @@ int handle_info_command(const char *filename, const char *username)
         char file_name[256];
         char owner[64];
         long size;
-        long created, modified, accessed;
+        long created, modified;
+        char accessed_str[64] = "Unknown";
         char permissions[32];
         int ss_id;
         char all_perms[1024] = "";
@@ -94,7 +95,8 @@ int handle_info_command(const char *filename, const char *username)
                 modified = atol(line);
                 break;
             case 5:
-                accessed = atol(line);
+                strncpy(accessed_str, line, sizeof(accessed_str) - 1);
+                accessed_str[sizeof(accessed_str) - 1] = '\0';
                 break;
             case 6:
                 strncpy(permissions, line, sizeof(permissions) - 1);
@@ -136,13 +138,7 @@ int handle_info_command(const char *filename, const char *username)
             printf("Modified:       %s\n", time_str);
         }
 
-        if (accessed > 0)
-        {
-            time_t t = (time_t)accessed;
-            char time_str[64];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&t));
-            printf("Last Accessed:  %s\n", time_str);
-        }
+        printf("Last Accessed:  %s\n", accessed_str);
 
         printf("========================\n");
     }

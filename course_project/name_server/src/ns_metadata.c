@@ -64,6 +64,11 @@ int add_file_metadata(const char *filename, const char *owner, int ss_id)
     meta->created = time(NULL);
     meta->modified = meta->created;
     meta->last_accessed = meta->created;
+    if (owner) {
+        strncpy(meta->last_accessed_by, owner, sizeof(meta->last_accessed_by) - 1);
+    } else {
+        strcpy(meta->last_accessed_by, "system");
+    }
     meta->size = 0;
     meta->storage_server_id = ss_id;
 
@@ -88,12 +93,30 @@ FileMetadata *get_file_metadata(const char *filename)
     {
         if (strcmp(metadata_list[i].filename, filename) == 0)
         {
-            metadata_list[i].last_accessed = time(NULL);
             return &metadata_list[i];
         }
     }
 
     return NULL;
+}
+
+// Update access time and user
+int update_access_time(const char *filename, const char *username)
+{
+    if (!filename || !username)
+        return -1;
+
+    for (int i = 0; i < metadata_count; i++)
+    {
+        if (strcmp(metadata_list[i].filename, filename) == 0)
+        {
+            metadata_list[i].last_accessed = time(NULL);
+            strncpy(metadata_list[i].last_accessed_by, username, sizeof(metadata_list[i].last_accessed_by) - 1);
+            metadata_list[i].last_accessed_by[sizeof(metadata_list[i].last_accessed_by) - 1] = '\0';
+            return 0;
+        }
+    }
+    return -1;
 }
 
 // Update file metadata

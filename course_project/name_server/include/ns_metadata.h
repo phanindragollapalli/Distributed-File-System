@@ -10,6 +10,7 @@ typedef struct FileMetadata
     time_t created;
     time_t modified;
     time_t last_accessed;
+    char last_accessed_by[32];
     size_t size;
     int storage_server_id;
     char storage_location[64];
@@ -26,6 +27,9 @@ FileMetadata *get_file_metadata(const char *filename);
 
 // Update file metadata
 int update_file_metadata(const char *filename, size_t new_size);
+
+// Update access time and user
+int update_access_time(const char *filename, const char *username);
 
 // Delete file metadata
 int delete_file_metadata(const char *filename);

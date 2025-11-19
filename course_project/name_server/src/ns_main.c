@@ -241,6 +241,9 @@ void handle_view_request(int client_fd, const char *filename, const char *userna
 
     // 6. Send SS info to client
     send_ss_info_to_client(client_fd, ss_info);
+
+    // 7. Update access time
+    update_access_time(filename, username);
 }
 
 /* Handle file listing (VIEW) command
@@ -446,14 +449,23 @@ void handle_info_request(int client_fd, const char *filename, const char *userna
 
     // 6. Send metadata to client (format: FILE_INFO\nfield1\nfield2\n...)
     char response[2048];
+    char last_accessed_str[64] = "Never";
+    if (metadata->last_accessed > 0) {
+        struct tm tm_info;
+        localtime_r(&metadata->last_accessed, &tm_info);
+        char time_str[32];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_info);
+        snprintf(last_accessed_str, sizeof(last_accessed_str), "%s by %s", time_str, metadata->last_accessed_by);
+    }
+
     snprintf(response, sizeof(response),
-             "FILE_INFO\n%s\n%s\n%ld\n%ld\n%ld\n%ld\n%s\n%d\n%s\n",
+             "FILE_INFO\n%s\n%s\n%ld\n%ld\n%ld\n%s\n%s\n%d\n%s\n",
              metadata->filename,
              metadata->owner,
              (long)metadata->size,
              (long)metadata->created,
              (long)metadata->modified,
-             (long)metadata->last_accessed,
+             last_accessed_str,
              user_perms,
              metadata->storage_server_id,
              all_perms);
@@ -630,6 +642,8 @@ void handle_exec_request(int client_fd, const char *filename, const char *userna
 
         log_message(global_logger, LOG_INFO, "EXEC successful: file='%s', output_size=%zu",
                     filename, strlen(output));
+        
+        update_access_time(filename, username);
     }
     else
     {
@@ -889,6 +903,7 @@ void *handle_client(void *arg)
             {
                 StorageServerInfo *ss_info = get_ss_by_id(ss_id);
                 send_ss_info_to_client(conn_fd, ss_info);
+                update_access_time(arg1, arg2);
             }
             else
             {
@@ -933,6 +948,7 @@ void *handle_client(void *arg)
                 else
                 {
                     send_ss_info_to_client(conn_fd, ss_info);
+                    update_access_time(arg1, arg2);
                 }
             }
         }
