@@ -12,6 +12,7 @@
 #include "../include/client_file_ops.h"
 #include "../include/client_access.h"
 #include "../include/client_network.h"
+#include "../include/client_stream.h"
 #include <stdio.h>
 #include <string.h>
 
