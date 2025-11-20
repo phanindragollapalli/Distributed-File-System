@@ -8,40 +8,89 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include "../include/client_network.h"
 #include "../include/client_commands.h"
 #include "../../common/include/protocol.h"
 
-int main()
+int main(int argc, char *argv[])
 {
+    if (argc < 2)
+    {
+        fprintf(stderr, "Usage: %s <nameserver_ip>\n", argv[0]);
+        return 1;
+    }
+
+    client_set_ns_ip(argv[1]);
+
     printf("=== Distributed File System Client ===\n");
 
     // Get username
     char username[32];
-    printf("Enter username: ");
-    if (fgets(username, sizeof(username), stdin))
+    while (1)
     {
+        printf("Enter username: ");
+        if (!fgets(username, sizeof(username), stdin))
+        {
+            fprintf(stderr, "Failed to read username. Please try again.\n");
+            clearerr(stdin);
+            continue;
+        }
+
         // Remove newline
         username[strcspn(username, "\n")] = 0;
-    }
-    else
-    {
-        strcpy(username, "guest");
+
+        // Trim leading whitespace
+        char *start = username;
+        while (*start && isspace((unsigned char)*start))
+        {
+            start++;
+        }
+
+        // Trim trailing whitespace
+        char *end = start + strlen(start);
+        while (end > start && isspace((unsigned char)*(end - 1)))
+        {
+            *(--end) = '\0';
+        }
+
+        if (start != username)
+        {
+            memmove(username, start, strlen(start) + 1);
+        }
+
+        if (strlen(username) == 0)
+        {
+            fprintf(stderr, "Username cannot be empty. Please try again.\n");
+            continue;
+        }
+
+        break;
     }
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         fprintf(stderr, "Failed to connect to Name Server\n");
         return 1;
     }
 
+    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+    struct sockaddr_in local_addr;
+    socklen_t addr_len = sizeof(local_addr);
+    if (getsockname(ns_fd, (struct sockaddr *)&local_addr, &addr_len) == 0)
+    {
+        inet_ntop(AF_INET, &local_addr.sin_addr, local_ip, sizeof(local_ip));
+    }
+
     // Register with Name Server
     char reg_msg[256];
-    snprintf(reg_msg, sizeof(reg_msg), "REGISTER_CLIENT %s 127.0.0.1 %d\n",
-             username, CLIENT_BASE_PORT);
+    snprintf(reg_msg, sizeof(reg_msg), "REGISTER_CLIENT %s %s %d\n",
+             username, local_ip, CLIENT_BASE_PORT);
     write(ns_fd, reg_msg, strlen(reg_msg));
 
     // Wait for ACK

@@ -13,8 +13,120 @@
 #include <string.h>
 #include <time.h>
 #include <libgen.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <unistd.h>
 
 extern Logger *ss_logger; // Declared in ss_main.c
+
+// Helper to get undo file path
+static void get_undo_filepath(const char *original_path, char *undo_path, size_t size)
+{
+    snprintf(undo_path, size, "%s.undo", original_path);
+}
+
+// Load undo state from disk
+static void load_undo_state(UndoManager *manager)
+{
+    char undo_path[MAX_PATH_LEN];
+    get_undo_filepath(manager->filepath, undo_path, sizeof(undo_path));
+
+    FILE *fp = fopen(undo_path, "r");
+    if (!fp)
+    {
+        // No undo file exists, which is fine
+        return;
+    }
+
+    // Read username
+    char username[MAX_USERNAME_LEN];
+    if (!fgets(username, sizeof(username), fp))
+    {
+        fclose(fp);
+        return;
+    }
+    username[strcspn(username, "\n")] = 0;
+
+    // Read timestamp
+    time_t timestamp;
+    if (fscanf(fp, "%ld\n", &timestamp) != 1)
+    {
+        fclose(fp);
+        return;
+    }
+
+    // Read content size
+    size_t content_size;
+    if (fscanf(fp, "%zu\n", &content_size) != 1)
+    {
+        fclose(fp);
+        return;
+    }
+
+    // Read content
+    char *content = (char *)malloc(content_size + 1);
+    if (!content)
+    {
+        fclose(fp);
+        return;
+    }
+
+    size_t read_size = fread(content, 1, content_size, fp);
+    content[read_size] = '\0';
+    fclose(fp);
+
+    // Create undo entry
+    UndoEntry *entry = (UndoEntry *)malloc(sizeof(UndoEntry));
+    if (!entry)
+    {
+        free(content);
+        return;
+    }
+
+    entry->file_content = content;
+    entry->timestamp = timestamp;
+    strncpy(entry->username, username, MAX_USERNAME_LEN - 1);
+    entry->username[MAX_USERNAME_LEN - 1] = '\0';
+
+    manager->last_state = entry;
+    manager->has_history = 1;
+
+    log_message(ss_logger, LOG_INFO, "Loaded undo state for: %s", manager->filepath);
+}
+
+// Save undo state to disk
+static void persist_undo_state(UndoManager *manager)
+{
+    if (!manager || !manager->last_state)
+        return;
+
+    char undo_path[MAX_PATH_LEN];
+    get_undo_filepath(manager->filepath, undo_path, sizeof(undo_path));
+
+    FILE *fp = fopen(undo_path, "w");
+    if (!fp)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to open undo file for writing: %s", undo_path);
+        return;
+    }
+
+    fprintf(fp, "%s\n", manager->last_state->username);
+    fprintf(fp, "%ld\n", manager->last_state->timestamp);
+    
+    size_t len = strlen(manager->last_state->file_content);
+    fprintf(fp, "%zu\n", len);
+    fwrite(manager->last_state->file_content, 1, len, fp);
+
+    fclose(fp);
+}
+
+// Delete undo file from disk
+static void delete_undo_file(const char *filepath)
+{
+    char undo_path[MAX_PATH_LEN];
+    get_undo_filepath(filepath, undo_path, sizeof(undo_path));
+    unlink(undo_path);
+}
 
 // Create undo manager
 UndoManager *create_undo_manager(const char *filepath)
@@ -43,6 +155,9 @@ UndoManager *create_undo_manager(const char *filepath)
         free(manager);
         return NULL;
     }
+
+    // Try to load existing undo state from disk
+    load_undo_state(manager);
 
     log_message(ss_logger, LOG_INFO, "Created undo manager for: %s", filepath);
     return manager;
@@ -119,6 +234,9 @@ int save_undo_state(UndoManager *manager, FileStructure *file, const char *usern
 
     manager->last_state = entry;
     manager->has_history = 1;
+
+    // Persist to disk
+    persist_undo_state(manager);
 
     pthread_mutex_unlock(&manager->undo_lock);
 
@@ -202,6 +320,9 @@ int undo_last_change(UndoManager *manager, const char *filepath, FileStructure *
     manager->last_state = NULL;
     manager->has_history = 0;
 
+    // Remove undo file from disk
+    delete_undo_file(filepath);
+
     *restored_file = file;
     pthread_mutex_unlock(&manager->undo_lock);
 
@@ -227,6 +348,9 @@ void clear_undo_history(UndoManager *manager)
     }
 
     manager->has_history = 0;
+
+    // Remove undo file from disk
+    delete_undo_file(manager->filepath);
 
     pthread_mutex_unlock(&manager->undo_lock);
 

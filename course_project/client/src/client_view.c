@@ -54,7 +54,7 @@ int handle_view_command(const char *command, const char *username)
     }
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");

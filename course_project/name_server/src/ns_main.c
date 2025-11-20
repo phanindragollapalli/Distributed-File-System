@@ -28,6 +28,9 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <signal.h>
@@ -36,6 +39,9 @@
 
 Logger *global_logger = NULL;
 TrieNode *global_file_trie = NULL;
+static char ns_bound_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+static pthread_mutex_t active_ss_lock = PTHREAD_MUTEX_INITIALIZER;
+static int current_active_ss_id = -1;
 
 static void ensure_directory(const char *path)
 {
@@ -81,6 +87,201 @@ static void parse_file_list_chunk(const char *data, char files[][128], int *file
             *list_complete = 1;
         }
         line = strtok_r(NULL, "\n", &save_ptr);
+    }
+}
+
+typedef struct
+{
+    int ss_id;
+} StorageServerMonitorArgs;
+
+static void detect_host_ip()
+{
+    struct ifaddrs *ifaddr = NULL;
+    if (getifaddrs(&ifaddr) == -1)
+    {
+        strncpy(ns_bound_ip, "0.0.0.0", sizeof(ns_bound_ip));
+        ns_bound_ip[sizeof(ns_bound_ip) - 1] = '\0';
+        return;
+    }
+
+    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
+    {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
+        {
+            continue;
+        }
+
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK))
+        {
+            continue;
+        }
+
+        struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+        inet_ntop(AF_INET, &sa->sin_addr, ns_bound_ip, sizeof(ns_bound_ip));
+        break;
+    }
+
+    freeifaddrs(ifaddr);
+}
+
+static void ensure_active_ss_initialized(int ss_id)
+{
+    pthread_mutex_lock(&active_ss_lock);
+    if (current_active_ss_id == -1 && ss_id >= 0)
+    {
+        current_active_ss_id = ss_id;
+    }
+    pthread_mutex_unlock(&active_ss_lock);
+}
+
+static int find_next_active_ss_locked(int exclude_id)
+{
+    int count = get_ss_count();
+    for (int i = 0; i < count; ++i)
+    {
+        StorageServerInfo *candidate = get_ss_by_id(i);
+        if (!candidate || !candidate->is_connected || candidate->ns_fd < 0)
+        {
+            continue;
+        }
+
+        if (candidate->ss_id == exclude_id)
+        {
+            continue;
+        }
+
+        return candidate->ss_id;
+    }
+    return -1;
+}
+
+static void announce_client_assignment(const char *username)
+{
+    pthread_mutex_lock(&active_ss_lock);
+    int active_id = current_active_ss_id;
+    StorageServerInfo *ss = (active_id >= 0) ? get_ss_by_id(active_id) : NULL;
+
+    if (ss && ss->is_connected)
+    {
+        printf("Client %s connected, assigning storage server on port %d\n",
+               username, ss->ss_client_port);
+    }
+    else
+    {
+        printf("Client %s connected, but no storage server is currently available\n", username);
+    }
+
+    pthread_mutex_unlock(&active_ss_lock);
+}
+
+static void handle_storage_server_disconnect(int ss_id)
+{
+    pthread_mutex_lock(&active_ss_lock);
+    StorageServerInfo *ss = get_ss_by_id(ss_id);
+    if (!ss || !ss->is_connected)
+    {
+        pthread_mutex_unlock(&active_ss_lock);
+        return;
+    }
+
+    ss->is_connected = 0;
+    if (ss->ns_fd >= 0)
+    {
+        close(ss->ns_fd);
+        ss->ns_fd = -1;
+    }
+
+    printf("Storage server on port %d disconnected\n", ss->ss_client_port);
+
+    if (current_active_ss_id == ss_id)
+    {
+        int new_id = find_next_active_ss_locked(ss_id);
+        if (new_id >= 0)
+        {
+            StorageServerInfo *new_ss = get_ss_by_id(new_id);
+            current_active_ss_id = new_id;
+            printf("Storage server on port %d disconnected, assigning the storage server on port %d for connection\n",
+                   ss->ss_client_port, new_ss->ss_client_port);
+        }
+        else
+        {
+            current_active_ss_id = -1;
+        }
+    }
+
+    pthread_mutex_unlock(&active_ss_lock);
+}
+
+static void *monitor_storage_server(void *arg)
+{
+    StorageServerMonitorArgs *ctx = (StorageServerMonitorArgs *)arg;
+    int ss_id = ctx->ss_id;
+    free(ctx);
+
+    StorageServerInfo *ss = get_ss_by_id(ss_id);
+    if (!ss)
+    {
+        return NULL;
+    }
+
+    struct pollfd pfd;
+    pfd.fd = ss->ns_fd;
+    pfd.events = POLLIN | POLLHUP | POLLERR;
+
+    while (ss->is_connected)
+    {
+        int res = poll(&pfd, 1, 1000);
+        if (res < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            break;
+        }
+
+        if (res == 0)
+        {
+            continue;
+        }
+
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
+        {
+            handle_storage_server_disconnect(ss_id);
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+static void start_storage_server_monitor(int ss_id)
+{
+    StorageServerInfo *ss = get_ss_by_id(ss_id);
+    if (!ss)
+    {
+        return;
+    }
+
+    StorageServerMonitorArgs *args = malloc(sizeof(StorageServerMonitorArgs));
+    if (!args)
+    {
+        log_message(global_logger, LOG_WARN, "Failed to allocate monitor arguments for SS %d", ss_id);
+        return;
+    }
+
+    args->ss_id = ss_id;
+    pthread_t thread_id;
+    if (pthread_create(&thread_id, NULL, monitor_storage_server, args) == 0)
+    {
+        pthread_detach(thread_id);
+        ss->monitor_thread = thread_id;
+    }
+    else
+    {
+        log_message(global_logger, LOG_WARN, "Failed to start monitor thread for SS %d", ss_id);
+        free(args);
     }
 }
 
@@ -737,6 +938,14 @@ void *handle_storage_server(void *arg)
         log_message(global_logger, LOG_INFO, "Successfully registered SS %d with %d files",
                     ss_id, file_count);
 
+        StorageServerInfo *ss_info = get_ss_by_id(ss_id);
+        if (ss_info)
+        {
+            printf("Storage server connected on port %d\n", ss_info->ss_client_port);
+            ensure_active_ss_initialized(ss_id);
+            start_storage_server_monitor(ss_id);
+        }
+
         // Keep connection open for future NS→SS commands
         return NULL;
     }
@@ -796,6 +1005,7 @@ void *handle_client(void *arg)
 
         const char *ack = "ACK CLIENT_REGISTERED\n";
         write(conn_fd, ack, strlen(ack));
+        announce_client_assignment(username);
     }
     // Handle VIEW command
     else if (strcmp(cmd, "VIEW") == 0)
@@ -1257,6 +1467,8 @@ int main()
     }
 
     log_message(global_logger, LOG_INFO, "Name Server ready, accepting connections");
+    detect_host_ip();
+    printf("Connected to IP %s and port %d\n", ns_bound_ip, NS_PORT);
     printf("Name Server running on port %d\n", NS_PORT);
     printf("Commands: VIEW, LIST, INFO, GRANT, REVOKE, EXEC\n");
     printf("Persistence: Enabled (auto-save every %d seconds)\n", AUTO_SAVE_INTERVAL);

@@ -188,7 +188,7 @@ int handle_stream_command(const char *filename, const char *username)
 
     printf("Streaming file: %s\n", filename);
 
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");

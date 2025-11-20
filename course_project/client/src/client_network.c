@@ -5,11 +5,28 @@
  */
 
 #include "client_network.h"
+#include "../../common/include/protocol.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 // Connect to Name Server
+static char g_ns_ip[INET_ADDRSTRLEN] = "127.0.0.1";
+
+void client_set_ns_ip(const char *ns_ip)
+{
+    if (ns_ip && strlen(ns_ip) > 0)
+    {
+        strncpy(g_ns_ip, ns_ip, sizeof(g_ns_ip) - 1);
+        g_ns_ip[sizeof(g_ns_ip) - 1] = '\0';
+    }
+}
+
+const char *client_get_ns_ip()
+{
+    return g_ns_ip;
+}
+
 int connect_to_ns(const char *ns_ip, int ns_port)
 {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -36,6 +53,11 @@ int connect_to_ns(const char *ns_ip, int ns_port)
     }
 
     return sockfd;
+}
+
+int connect_to_ns_default()
+{
+    return connect_to_ns(client_get_ns_ip(), NS_PORT);
 }
 
 int send_to_ns(int sockfd, const char *msg)

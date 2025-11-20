@@ -50,7 +50,7 @@ int handle_create_command(const char *filename, const char *username)
 
     // Connect to Name Server
     // printf("DEBUG: Connecting to NS at 127.0.0.1:%d\n", NS_PORT);
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
@@ -135,7 +135,7 @@ int handle_read_command(const char *filename, const char *username)
     printf("Reading file: %s\n", filename);
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
@@ -275,7 +275,7 @@ int handle_delete_command(const char *filename, const char *username)
     printf("Deleting file: %s\n", filename);
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
@@ -369,7 +369,7 @@ int handle_write_command(const char *filename, int sentence_index, const char *u
     printf("WRITE mode: file='%s', sentence=%d\n", filename, sentence_index);
 
     // Step 1: Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");
@@ -633,7 +633,7 @@ int handle_undo_command(const char *filename, const char *username)
     printf("Undoing last change to file: %s\n", filename);
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");

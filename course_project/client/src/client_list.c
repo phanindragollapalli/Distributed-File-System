@@ -19,7 +19,7 @@ int handle_list_command(const char *username)
     printf("Listing all users in the system...\n");
 
     // Connect to Name Server
-    int ns_fd = connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = connect_to_ns_default();
     if (ns_fd < 0)
     {
         printf("Error: Failed to connect to Name Server\n");

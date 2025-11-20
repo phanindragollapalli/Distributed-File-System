@@ -14,6 +14,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
@@ -107,10 +108,6 @@ static int start_client_listener(int base_port, int max_attempts, int *out_fd, i
 
         int opt = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-#ifdef SO_REUSEPORT
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-#endif
 
         struct sockaddr_in addr = {0};
         addr.sin_family = AF_INET;
@@ -687,8 +684,27 @@ void *handle_client_request(void *arg)
     return NULL;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    if (argc < 3)
+    {
+        fprintf(stderr, "Usage: %s <nameserver_ip> <storage_server_port>\n", argv[0]);
+        return 1;
+    }
+
+    const char *ns_ip_arg = argv[1];
+    char ns_ip[INET_ADDRSTRLEN];
+    strncpy(ns_ip, ns_ip_arg, sizeof(ns_ip) - 1);
+    ns_ip[sizeof(ns_ip) - 1] = '\0';
+
+    long requested_port_long = strtol(argv[2], NULL, 10);
+    if (requested_port_long <= 0 || requested_port_long > 65535)
+    {
+        fprintf(stderr, "Invalid storage server port: %s\n", argv[2]);
+        return 1;
+    }
+    int requested_client_port = (int)requested_port_long;
+
     // Set up signal handler for graceful shutdown (Ctrl+C)
     signal(SIGINT, sigint_handler);
 
@@ -721,7 +737,7 @@ int main()
     }
 
     // Connect to NS
-    int ns_fd = ss_connect_to_ns("127.0.0.1", NS_PORT);
+    int ns_fd = ss_connect_to_ns(ns_ip, NS_PORT);
     if (ns_fd < 0)
     {
         log_message(ss_logger, LOG_ERROR, "Failed to connect to Name Server");
@@ -729,24 +745,34 @@ int main()
         return 1;
     }
 
-    log_connection(ss_logger, "CONNECTED", "127.0.0.1", NS_PORT);
+    log_connection(ss_logger, "CONNECTED", ns_ip, NS_PORT);
 
     // Store NS FD globally for cleanup
     ns_fd_global = ns_fd;
 
     // Prepare client listener before registration so advertised port is reachable
     int client_server_fd = -1;
-    int client_port = SS_BASE_PORT + 100; // Default client port
-    if (start_client_listener(client_port, 32, &client_server_fd, &client_port) != 0)
+    int client_port = requested_client_port;
+    if (start_client_listener(client_port, 1, &client_server_fd, &client_port) != 0)
     {
-        log_message(ss_logger, LOG_ERROR, "Unable to create client listener socket");
+        fprintf(stderr, "Port %d is unavailable. Please choose a different port for the Storage Server.\n",
+                requested_client_port);
+        log_message(ss_logger, LOG_ERROR, "Unable to create client listener socket on requested port");
         close(ns_fd);
         logger_close(ss_logger);
         return 1;
     }
 
+    char advertised_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+    struct sockaddr_in local_addr;
+    socklen_t addr_len = sizeof(local_addr);
+    if (getsockname(ns_fd, (struct sockaddr *)&local_addr, &addr_len) == 0)
+    {
+        inet_ntop(AF_INET, &local_addr.sin_addr, advertised_ip, sizeof(advertised_ip));
+    }
+
     // Register with NS using the actual listener port
-    if (register_with_ns(ns_fd, "127.0.0.1", SS_BASE_PORT, client_port))
+    if (register_with_ns(ns_fd, advertised_ip, NS_PORT, client_port))
     {
         log_message(ss_logger, LOG_INFO, "Successfully registered with Name Server (client_port=%d)",
                     client_port);

@@ -13,6 +13,8 @@ typedef struct
     int file_count;
     int ns_fd;
     pthread_mutex_t command_lock;
+    int is_connected;
+    pthread_t monitor_thread;
 } StorageServerInfo;
 
 typedef struct

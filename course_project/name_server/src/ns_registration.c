@@ -29,6 +29,8 @@ int register_storage_server(const char *ip, int nm_port, int client_port,
     for (int i = 0; i < file_count; ++i)
         strncpy(ss->files[i], file_list[i], 128);
     pthread_mutex_init(&ss->command_lock, NULL);
+    ss->is_connected = 1;
+    ss->monitor_thread = 0;
     ++ss_count;
     printf("Registered SS: %s:%d (client_port %d); %d files\n", ip, nm_port, client_port, file_count);
     return ss_count - 1; // Return ID
