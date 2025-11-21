@@ -884,13 +884,13 @@ void *handle_storage_server(void *arg)
     }
     buffer[bytes_read] = '\0';
 
-    /* Extract SS IP, Name Server port, and Client port from registration message */
+    /* Extract SS ID, IP, Name Server port, and Client port from registration message */
     char ss_ip[32];
-    int ss_nm_port, ss_client_port;
-    if (sscanf(buffer, "REGISTER_SS %s %d %d", ss_ip, &ss_nm_port, &ss_client_port) == 3)
+    int ss_id_requested, ss_nm_port, ss_client_port;
+    if (sscanf(buffer, "REGISTER_SS %d %s %d %d", &ss_id_requested, ss_ip, &ss_nm_port, &ss_client_port) == 4)
     {
-        log_message(global_logger, LOG_INFO, "Received SS registration: %s:%d (client:%d)",
-                    ss_ip, ss_nm_port, ss_client_port);
+        log_message(global_logger, LOG_INFO, "Received SS registration: ss_id=%d %s:%d (client:%d)",
+                    ss_id_requested, ss_ip, ss_nm_port, ss_client_port);
 
         /* Prepare to collect list of accessible files from this Storage Server */
         char files[128][128];
@@ -918,8 +918,8 @@ void *handle_storage_server(void *arg)
             parse_file_list_chunk(buffer, files, &file_count, &list_complete);
         }
 
-        /* Register the Storage Server and get assigned SS_ID */
-        int ss_id = register_storage_server(ss_ip, ss_nm_port, ss_client_port,
+        /* Register the Storage Server with requested SS_ID */
+        int ss_id = register_storage_server_with_id(ss_id_requested, ss_ip, ss_nm_port, ss_client_port,
                                             (const char (*)[128])files, file_count, conn_fd);
 
         /* Insert all files into Trie for efficient O(m) lookup where m is path length */
@@ -1202,65 +1202,138 @@ void *handle_client(void *arg)
         }
         else
         {
-            // Select SS (round-robin or first available)
-            int total_ss = get_ss_count();
-            int target_ss_id = 0; // TODO: implement better selection policy
-            log_message(global_logger, LOG_DEBUG, "CREATE: Total SS count = %d", total_ss);
-            StorageServerInfo *ss_info = get_ss_by_id(target_ss_id);
-            if (!ss_info || ss_info->ns_fd <= 0)
+            // Select SS - find first connected storage server
+            pthread_mutex_lock(&active_ss_lock);
+            int target_ss_id = current_active_ss_id;
+            
+            // If no active SS or it's disconnected, find another one
+            StorageServerInfo *test_ss = (target_ss_id >= 0) ? get_ss_by_id(target_ss_id) : NULL;
+            if (!test_ss || !test_ss->is_connected || test_ss->ns_fd <= 0)
+            {
+                // Find any connected SS
+                int total_ss = get_ss_count();
+                target_ss_id = -1;
+                for (int i = 0; i < total_ss; i++)
+                {
+                    StorageServerInfo *candidate = get_ss_by_id(i);
+                    if (candidate && candidate->is_connected && candidate->ns_fd > 0)
+                    {
+                        target_ss_id = i;
+                        break;
+                    }
+                }
+            }
+            pthread_mutex_unlock(&active_ss_lock);
+            
+            log_message(global_logger, LOG_DEBUG, "CREATE: Selected SS ID = %d", target_ss_id);
+            
+            StorageServerInfo *ss_info = (target_ss_id >= 0) ? get_ss_by_id(target_ss_id) : NULL;
+            if (!ss_info || !ss_info->is_connected || ss_info->ns_fd <= 0)
             {
                 log_message(global_logger, LOG_ERROR,
-                            "CREATE failed: No storage server control connection available (count=%d)", total_ss);
+                            "CREATE failed: No storage server available (checked %d servers)", get_ss_count());
                 send_error_to_client(conn_fd, "No storage server available");
             }
             else
             {
                 char error_detail[256] = "Storage server failed to create file";
                 int create_success = 0;
+                int retry_count = 0;
+                const int MAX_RETRIES = 2;
 
-                pthread_mutex_lock(&ss_info->command_lock);
-
-                do
+                while (!create_success && retry_count < MAX_RETRIES)
                 {
-                    char ss_cmd[512];
-                    snprintf(ss_cmd, sizeof(ss_cmd), "CREATE %s\n", arg1);
-
-                    if (write(ss_info->ns_fd, ss_cmd, strlen(ss_cmd)) < 0)
+                    ss_info = (target_ss_id >= 0) ? get_ss_by_id(target_ss_id) : NULL;
+                    if (!ss_info || !ss_info->is_connected || ss_info->ns_fd <= 0)
                     {
                         log_message(global_logger, LOG_ERROR,
-                                    "CREATE: Failed to send command to SS (%s:%d)",
-                                    ss_info->ss_ip, ss_info->ss_nm_port);
-                        snprintf(error_detail, sizeof(error_detail),
-                                 "Failed to contact storage server");
-                        break;
+                                    "CREATE retry %d: SS %d not available", retry_count, target_ss_id);
+                        
+                        // Try to find another SS
+                        pthread_mutex_lock(&active_ss_lock);
+                        int total_ss = get_ss_count();
+                        target_ss_id = -1;
+                        for (int i = 0; i < total_ss; i++)
+                        {
+                            StorageServerInfo *candidate = get_ss_by_id(i);
+                            if (candidate && candidate->is_connected && candidate->ns_fd > 0)
+                            {
+                                target_ss_id = i;
+                                break;
+                            }
+                        }
+                        pthread_mutex_unlock(&active_ss_lock);
+                        
+                        if (target_ss_id < 0)
+                        {
+                            snprintf(error_detail, sizeof(error_detail),
+                                     "No storage server available");
+                            break;
+                        }
+                        // Don't increment retry_count here, just continue to try the new SS
+                        continue;
                     }
 
-                    char ss_response[256];
-                    int n = read(ss_info->ns_fd, ss_response, sizeof(ss_response) - 1);
-                    if (n <= 0)
-                    {
-                        log_message(global_logger, LOG_ERROR,
-                                    "CREATE: Failed to read response from SS (%s:%d)",
-                                    ss_info->ss_ip, ss_info->ss_nm_port);
-                        snprintf(error_detail, sizeof(error_detail),
-                                 "No response from storage server");
-                        break;
-                    }
+                    int need_retry = 0;
+                    pthread_mutex_lock(&ss_info->command_lock);
 
-                    ss_response[n] = '\0';
-                    if (strncmp(ss_response, "ACK", 3) == 0)
+                    do
                     {
-                        create_success = 1;
-                    }
-                    else
-                    {
-                        snprintf(error_detail, sizeof(error_detail), "%s", ss_response);
-                        log_message(global_logger, LOG_ERROR,
-                                    "CREATE: SS returned error: %s", ss_response);
-                    }
-                } while (0);
+                        char ss_cmd[512];
+                        snprintf(ss_cmd, sizeof(ss_cmd), "CREATE %s\n", arg1);
 
-                pthread_mutex_unlock(&ss_info->command_lock);
+                        if (write(ss_info->ns_fd, ss_cmd, strlen(ss_cmd)) < 0)
+                        {
+                            log_message(global_logger, LOG_ERROR,
+                                        "CREATE: Failed to send command to SS (%s:%d)",
+                                        ss_info->ss_ip, ss_info->ss_nm_port);
+                            snprintf(error_detail, sizeof(error_detail),
+                                     "Failed to contact storage server");
+                            
+                            // Mark SS as disconnected and retry
+                            need_retry = 1;
+                            handle_storage_server_disconnect(target_ss_id);
+                            target_ss_id = -1;  // Force finding a new SS
+                            break;
+                        }
+
+                        char ss_response[256];
+                        int n = read(ss_info->ns_fd, ss_response, sizeof(ss_response) - 1);
+                        if (n <= 0)
+                        {
+                            log_message(global_logger, LOG_ERROR,
+                                        "CREATE: Failed to read response from SS (%s:%d)",
+                                        ss_info->ss_ip, ss_info->ss_nm_port);
+                            snprintf(error_detail, sizeof(error_detail),
+                                     "No response from storage server");
+                            
+                            // Mark SS as disconnected and retry
+                            need_retry = 1;
+                            handle_storage_server_disconnect(target_ss_id);
+                            target_ss_id = -1;  // Force finding a new SS
+                            break;
+                        }
+
+                        ss_response[n] = '\0';
+                        if (strncmp(ss_response, "ACK", 3) == 0)
+                        {
+                            create_success = 1;
+                        }
+                        else
+                        {
+                            snprintf(error_detail, sizeof(error_detail), "%s", ss_response);
+                            log_message(global_logger, LOG_ERROR,
+                                        "CREATE: SS returned error: %s", ss_response);
+                        }
+                    } while (0);
+
+                    pthread_mutex_unlock(&ss_info->command_lock);
+                    
+                    if (need_retry || !create_success)
+                    {
+                        retry_count++;
+                    }
+                }
 
                 if (create_success)
                 {

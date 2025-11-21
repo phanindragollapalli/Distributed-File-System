@@ -14,10 +14,10 @@
 #include <arpa/inet.h>
 
 // Register Storage Server with Name Server
-int register_with_ns(int ns_fd, const char *ss_ip, int ss_nm_port, int ss_client_port)
+int register_with_ns(int ns_fd, const char *ss_ip, int ss_nm_port, int ss_client_port, int ss_id)
 {
     char msg[512];
-    snprintf(msg, sizeof(msg), "REGISTER_SS %s %d %d\n", ss_ip, ss_nm_port, ss_client_port);
+    snprintf(msg, sizeof(msg), "REGISTER_SS %d %s %d %d\n", ss_id, ss_ip, ss_nm_port, ss_client_port);
     write(ns_fd, msg, strlen(msg));
     // Don't wait for ACK here - NS sends ACK after receiving file list
     return 1;

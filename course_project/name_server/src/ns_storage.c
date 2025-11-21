@@ -20,13 +20,18 @@ TrieNode *trie_create_node()
     TrieNode *node = (TrieNode *)calloc(1, sizeof(TrieNode));
     node->is_end_of_file = 0;
     node->file_name = NULL;
-    node->storage_server_id = -1;
+    node->ss_count = 0;
+    for (int i = 0; i < MAX_SS_PER_FILE; i++)
+    {
+        node->storage_server_ids[i] = -1;
+    }
     return node;
 }
 
 /* Insert a file path into Trie and associate it with a Storage Server ID
  * Traverses character by character, creating nodes as needed
  * Marks the final node as end of file and stores the SS_ID for routing
+ * Supports multiple SS_IDs per file for replication
  */
 void trie_insert(TrieNode *root, const char *filename, int ss_id)
 {
@@ -39,13 +44,31 @@ void trie_insert(TrieNode *root, const char *filename, int ss_id)
         p = p->children[idx];
     }
     p->is_end_of_file = 1;
-    p->file_name = strdup(filename);
-    p->storage_server_id = ss_id;
+    if (!p->file_name)
+    {
+        p->file_name = strdup(filename);
+    }
+    
+    // Add SS_ID if not already present
+    int found = 0;
+    for (int i = 0; i < p->ss_count; i++)
+    {
+        if (p->storage_server_ids[i] == ss_id)
+        {
+            found = 1;
+            break;
+        }
+    }
+    
+    if (!found && p->ss_count < MAX_SS_PER_FILE)
+    {
+        p->storage_server_ids[p->ss_count++] = ss_id;
+    }
 }
 
 /* Search for a file in the Trie and retrieve its Storage Server ID
  * Returns 1 if file found, 0 if not found
- * If found, outputs the SS_ID through ss_id_out pointer for routing purposes
+ * If found, outputs the first SS_ID through ss_id_out pointer for routing purposes
  * Time complexity: O(m) where m is the length of the filename
  */
 int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
@@ -58,12 +81,39 @@ int trie_search(TrieNode *root, const char *filename, int *ss_id_out)
             return 0;
         p = p->children[idx];
     }
-    if (p && p->is_end_of_file)
+    if (p && p->is_end_of_file && p->ss_count > 0)
     {
         if (ss_id_out)
-            *ss_id_out = p->storage_server_id;
+            *ss_id_out = p->storage_server_ids[0];
         return 1;
     }
+    return 0;
+}
+
+/* Search for a file and get all SS_IDs that store it
+ * Returns the number of SS_IDs found
+ */
+int trie_search_all(TrieNode *root, const char *filename, int *ss_ids_out, int max_ids)
+{
+    TrieNode *p = root;
+    for (int i = 0; filename[i]; ++i)
+    {
+        unsigned char idx = filename[i];
+        if (!p->children[idx])
+            return 0;
+        p = p->children[idx];
+    }
+    
+    if (p && p->is_end_of_file)
+    {
+        int count = (p->ss_count < max_ids) ? p->ss_count : max_ids;
+        for (int i = 0; i < count; i++)
+        {
+            ss_ids_out[i] = p->storage_server_ids[i];
+        }
+        return count;
+    }
+    
     return 0;
 }
 
@@ -88,7 +138,11 @@ static int trie_remove_recursive(TrieNode *node, const char *filename, int depth
             return 0;
 
         node->is_end_of_file = 0;
-        node->storage_server_id = -1;
+        node->ss_count = 0;
+        for (int i = 0; i < MAX_SS_PER_FILE; i++)
+        {
+            node->storage_server_ids[i] = -1;
+        }
         if (node->file_name)
         {
             free(node->file_name);
@@ -123,6 +177,47 @@ void trie_remove(TrieNode *root, const char *filename)
     trie_remove_recursive(root, filename, 0);
 }
 
+/* Remove a specific SS_ID from a file's replication list */
+void trie_remove_ss(TrieNode *root, const char *filename, int ss_id)
+{
+    if (!root || !filename)
+        return;
+    
+    TrieNode *p = root;
+    for (int i = 0; filename[i]; ++i)
+    {
+        unsigned char idx = filename[i];
+        if (!p->children[idx])
+            return;
+        p = p->children[idx];
+    }
+    
+    if (!p || !p->is_end_of_file)
+        return;
+    
+    // Find and remove the SS_ID
+    for (int i = 0; i < p->ss_count; i++)
+    {
+        if (p->storage_server_ids[i] == ss_id)
+        {
+            // Shift remaining IDs
+            for (int j = i; j < p->ss_count - 1; j++)
+            {
+                p->storage_server_ids[j] = p->storage_server_ids[j + 1];
+            }
+            p->storage_server_ids[p->ss_count - 1] = -1;
+            p->ss_count--;
+            
+            // If no more SS have this file, remove it completely
+            if (p->ss_count == 0)
+            {
+                trie_remove(root, filename);
+            }
+            break;
+        }
+    }
+}
+
 /* ========== TRIE PERSISTENCE FUNCTIONS ========== */
 
 #define TRIE_FILE "name_server/data/trie.dat"
@@ -134,11 +229,11 @@ static void collect_files_recursive(TrieNode *node, char files[][256], int ss_id
         return;
 
     // If this is end of a file path, add to collection
-    if (node->is_end_of_file && node->file_name)
+    if (node->is_end_of_file && node->file_name && node->ss_count > 0)
     {
         strncpy(files[*count], node->file_name, 255);
         files[*count][255] = '\0';
-        ss_ids[*count] = node->storage_server_id;
+        ss_ids[*count] = node->storage_server_ids[0]; // Use first SS ID for persistence
         (*count)++;
     }
 

@@ -507,6 +507,92 @@ void *handle_client_request(void *arg)
             log_message(ss_logger, LOG_ERROR, "Failed to undo file: %s (code=%d)", filename, result);
         }
     }
+    else if (strcmp(cmd, "REPLICATE_CREATE") == 0)
+    {
+        if (parsed < 2)
+        {
+            const char *error = "ERROR: REPLICATE_CREATE requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
+        
+        log_message(ss_logger, LOG_INFO, "Peer replication: CREATE file %s", filename);
+        
+        // Create the file locally
+        FILE *f = fopen(filepath, "w");
+        if (!f)
+        {
+            const char *error = "ERROR: Failed to create file\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
+        
+        // Read file content until END_FILE marker
+        char content_buffer[4096];
+        int total_bytes = 0;
+        while (1)
+        {
+            int n = read(client_fd, content_buffer, sizeof(content_buffer));
+            if (n <= 0)
+            {
+                break;
+            }
+            
+            // Check for END_FILE marker
+            char *end_marker = strstr(content_buffer, "END_FILE");
+            if (end_marker)
+            {
+                // Write up to the marker
+                int write_bytes = end_marker - content_buffer;
+                if (write_bytes > 0)
+                {
+                    fwrite(content_buffer, 1, write_bytes, f);
+                    total_bytes += write_bytes;
+                }
+                break;
+            }
+            
+            // Write all content
+            fwrite(content_buffer, 1, n, f);
+            total_bytes += n;
+        }
+        
+        fclose(f);
+        
+        // Send ACK
+        const char *ack = "ACK\n";
+        write(client_fd, ack, strlen(ack));
+        
+        log_message(ss_logger, LOG_INFO, "Replicated file %s (%d bytes)", filename, total_bytes);
+    }
+    else if (strcmp(cmd, "REPLICATE_DELETE") == 0)
+    {
+        if (parsed < 2)
+        {
+            const char *error = "ERROR: REPLICATE_DELETE requires filename\n";
+            write(client_fd, error, strlen(error));
+            close(client_fd);
+            return NULL;
+        }
+        
+        log_message(ss_logger, LOG_INFO, "Peer replication: DELETE file %s", filename);
+        
+        // Delete the file locally
+        if (remove(filepath) == 0)
+        {
+            const char *ack = "ACK\n";
+            write(client_fd, ack, strlen(ack));
+            log_message(ss_logger, LOG_INFO, "Replicated deletion of file %s", filename);
+        }
+        else
+        {
+            const char *error = "ERROR: File not found\n";
+            write(client_fd, error, strlen(error));
+            log_message(ss_logger, LOG_WARN, "Failed to delete file %s in replication", filename);
+        }
+    }
     else if (strcmp(cmd, "STREAM") == 0)
     {
         int resume_from_word = 0;
@@ -686,9 +772,9 @@ void *handle_client_request(void *arg)
 
 int main(int argc, char *argv[])
 {
-    if (argc < 3)
+    if (argc < 4)
     {
-        fprintf(stderr, "Usage: %s <nameserver_ip> <storage_server_port>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <nameserver_ip> <ss_port> <storage_server_id>\n", argv[0]);
         return 1;
     }
 
@@ -705,6 +791,14 @@ int main(int argc, char *argv[])
     }
     int requested_client_port = (int)requested_port_long;
 
+    long ss_id_long = strtol(argv[3], NULL, 10);
+    if (ss_id_long < 0)
+    {
+        fprintf(stderr, "Invalid storage server id: %s\n", argv[3]);
+        return 1;
+    }
+    int ss_id = (int)ss_id_long;
+
     // Set up signal handler for graceful shutdown (Ctrl+C)
     signal(SIGINT, sigint_handler);
 
@@ -716,11 +810,27 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    log_message(ss_logger, LOG_INFO, "Starting Storage Server");
+    log_message(ss_logger, LOG_INFO, "Starting Storage Server with ID=%d", ss_id);
 
-    resolve_storage_directory();
+    // Create storage directory: storage/SS_<id>
+    char base_storage_dir[256];
+    snprintf(base_storage_dir, sizeof(base_storage_dir), "storage/SS_%d", ss_id);
+    
+    // Create base storage directory if it doesn't exist
+    char mkdir_cmd[512];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p %s", base_storage_dir);
+    if (system(mkdir_cmd) != 0)
+    {
+        log_message(ss_logger, LOG_ERROR, "Failed to create storage directory: %s", base_storage_dir);
+        logger_close(ss_logger);
+        return 1;
+    }
+    
+    strncpy(storage_dir, base_storage_dir, sizeof(storage_dir) - 1);
+    storage_dir[sizeof(storage_dir) - 1] = '\0';
+    log_message(ss_logger, LOG_INFO, "Using storage directory: %s", storage_dir);
 
-    file_ops_ctx = init_file_operations(storage_dir, 0, "127.0.0.1", NS_PORT);
+    file_ops_ctx = init_file_operations(storage_dir, ss_id, "127.0.0.1", NS_PORT);
     if (!file_ops_ctx)
     {
         log_message(ss_logger, LOG_ERROR, "Failed to initialize file operations context");
@@ -772,10 +882,10 @@ int main(int argc, char *argv[])
     }
 
     // Register with NS using the actual listener port
-    if (register_with_ns(ns_fd, advertised_ip, NS_PORT, client_port))
+    if (register_with_ns(ns_fd, advertised_ip, NS_PORT, client_port, ss_id))
     {
-        log_message(ss_logger, LOG_INFO, "Successfully registered with Name Server (client_port=%d)",
-                    client_port);
+        log_message(ss_logger, LOG_INFO, "Successfully registered with Name Server (ss_id=%d, client_port=%d)",
+                    ss_id, client_port);
     }
     else
     {

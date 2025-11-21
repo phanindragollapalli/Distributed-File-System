@@ -16,6 +16,11 @@ static int ss_count = 0;
 static ClientInfo client_list[32];
 static int client_count = 0;
 
+static int file_matches(const char *a, const char *b)
+{
+    return a && b && strncmp(a, b, 128) == 0;
+}
+
 int register_storage_server(const char *ip, int nm_port, int client_port,
                             const char file_list[][128], int file_count, int ns_fd)
 {
@@ -36,6 +41,80 @@ int register_storage_server(const char *ip, int nm_port, int client_port,
     return ss_count - 1; // Return ID
 }
 
+int register_storage_server_with_id(int ss_id, const char *ip, int nm_port, int client_port,
+                            const char file_list[][128], int file_count, int ns_fd)
+{
+    // Check if SS with this ID already exists AND was previously initialized
+    if (ss_id >= 0 && ss_id < ss_count)
+    {
+        StorageServerInfo *ss = &ss_list[ss_id];
+        
+        // Only treat as reconnection if this SS was actually used before
+        // Check if it has a valid ss_id set (meaning it was initialized)
+        if (ss->ss_id == ss_id && ss->ss_ip[0] != '\0')
+        {
+            // Reconnecting storage server - update connection info
+            strncpy(ss->ss_ip, ip, 32);
+            ss->ss_nm_port = nm_port;
+            ss->ss_client_port = client_port;
+            ss->ns_fd = ns_fd;
+            ss->is_connected = 1;
+            
+            // Merge file lists (add new files, keep existing)
+            for (int i = 0; i < file_count; ++i)
+            {
+                int found = 0;
+                for (int j = 0; j < ss->file_count; ++j)
+                {
+                    if (file_matches(ss->files[j], file_list[i]))
+                    {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found && ss->file_count < 128)
+                {
+                    strncpy(ss->files[ss->file_count], file_list[i], 128);
+                    ss->file_count++;
+                }
+            }
+            
+            printf("Reconnected SS %d: %s:%d (client_port %d); %d files\n", ss_id, ip, nm_port, client_port, ss->file_count);
+            return ss_id;
+        }
+        // Otherwise, fall through to initialize this slot as a new SS
+    }
+    
+    // New storage server - allocate at the requested ID
+    if (ss_id >= 0 && ss_id < 16)
+    {
+        // Ensure we have space
+        if (ss_id >= ss_count)
+        {
+            ss_count = ss_id + 1;
+        }
+        
+        StorageServerInfo *ss = &ss_list[ss_id];
+        ss->ss_id = ss_id;
+        strncpy(ss->ss_ip, ip, 32);
+        ss->ss_nm_port = nm_port;
+        ss->ss_client_port = client_port;
+        ss->file_count = file_count;
+        ss->ns_fd = ns_fd;
+        for (int i = 0; i < file_count; ++i)
+            strncpy(ss->files[i], file_list[i], 128);
+        pthread_mutex_init(&ss->command_lock, NULL);
+        ss->is_connected = 1;
+        ss->monitor_thread = 0;
+        
+        printf("Registered SS %d: %s:%d (client_port %d); %d files\n", ss_id, ip, nm_port, client_port, file_count);
+        return ss_id;
+    }
+    
+    // Fallback: use auto-increment ID
+    return register_storage_server(ip, nm_port, client_port, file_list, file_count, ns_fd);
+}
+
 int register_client(const char *username, const char *ip, int client_port)
 {
     ClientInfo *cli = &client_list[client_count];
@@ -54,7 +133,15 @@ StorageServerInfo *get_ss_by_id(int ss_id)
     {
         return NULL;
     }
-    return &ss_list[ss_id];
+    
+    // Check if this slot was actually initialized (has a valid IP)
+    StorageServerInfo *ss = &ss_list[ss_id];
+    if (ss->ss_ip[0] == '\0')
+    {
+        return NULL;  // Slot not initialized
+    }
+    
+    return ss;
 }
 
 // Get client by ID
@@ -76,11 +163,6 @@ int get_ss_count()
 int get_client_count()
 {
     return client_count;
-}
-
-static int file_matches(const char *a, const char *b)
-{
-    return a && b && strncmp(a, b, 128) == 0;
 }
 
 void ns_register_add_file(int ss_id, const char *filename)

@@ -9,6 +9,7 @@
 #include "../include/file_operations.h"
 #include "../include/file_parser.h"
 #include "../include/file_stream.h"
+#include "../include/ss_replication.h"
 #include "../../common/include/error_codes.h"
 #include "../../common/include/logger.h"
 #include <stdio.h>
@@ -924,6 +925,9 @@ int commit_write(FileOperationContext *ctx, WriteContext *wctx, const char *file
     // Notify name server of metadata update (file size/timestamp changed)
     notify_ns_metadata_update(ctx, filepath);
 
+    // Replicate changes to peer storage servers
+    replicate_write_to_peers(ctx, filepath);
+
     return SUCCESS;
 }
 
@@ -1145,6 +1149,9 @@ int delete_file(FileOperationContext *ctx, const char *filepath, const char *use
 
     // Step 5: Remove undo manager from context
     cleanup_undo_manager_for_file(ctx, filepath);
+
+    // Step 6: Replicate deletion to peer storage servers
+    replicate_delete_to_peers(ctx, filepath);
 
     log_message(ss_logger, LOG_INFO, "Successfully deleted file: %s by user %s",
                 filepath, username);
@@ -1643,6 +1650,9 @@ int create_file(FileOperationContext *ctx, const char *filepath, const char *use
         log_message(ss_logger, LOG_WARN, "Failed to notify NS, but file created locally");
         // Don't fail the operation - file is created
     }
+
+    // Replicate to peer storage servers
+    replicate_create_to_peers(ctx, filepath);
 
     log_message(ss_logger, LOG_INFO, "Successfully created file: %s by user %s",
                 filepath, username);
