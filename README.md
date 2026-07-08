@@ -123,5 +123,5 @@ Inside the client interface, you can use the following commands to interact with
 - **`EXIT`** - Quit the client application.
 
 ## Contributors
-* [@phanindragollapalli](https://github.com/phanindragollapalli)
-* [@YVKartikeya9](https://github.com/YVKartikeya9)
+* [Phanindra Gollapalli](https://github.com/phanindragollapalli)
+* [YV Kartikeya](https://github.com/YVKartikeya9)
