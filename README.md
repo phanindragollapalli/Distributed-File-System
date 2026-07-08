@@ -1,4 +1,4 @@
-# Distributed File System (OSN-WalNet-Kernel)
+# Distributed File System
 
 A robust, C-based Distributed File System (DFS) inspired by architectures like HDFS. The project provides a highly scalable and fault-tolerant environment for distributed file storage, access control, and concurrent modifications across multiple storage nodes.
 
@@ -121,3 +121,7 @@ Inside the client interface, you can use the following commands to interact with
 - **`UNDO <filename>`** - Undo the last committed change to a file.
 - **`STREAM <filename>`** - Stream file contents with live updates.
 - **`EXIT`** - Quit the client application.
+
+## Contributors
+* [@phanindragollapalli](https://github.com/phanindragollapalli)
+* [@YVKartikeya9](https://github.com/YVKartikeya9)
